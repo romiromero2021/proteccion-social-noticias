@@ -3,15 +3,17 @@ AGENTE 2 — Sintetizador y generador de reporte (summarizer.py)
 ================================================================
 Responsabilidad única: recibir las noticias crudas del Agente 1,
 seleccionar las 3 más relevantes por país, generar un resumen breve
-de cada una usando Gemini, y producir un documento Word (.docx)
-con el reporte final.
+de cada una usando Groq (Llama 3.3 70B), y producir un documento
+Word (.docx) con el reporte final.
 """
 
 import io
+import time
 from datetime import datetime
 from typing import List, Dict
 
-from google import genai
+import groq
+from groq import Groq
 from docx import Document
 from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -19,19 +21,33 @@ from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.ns import qn
 
 # ---------------------------------------------------------------------------
-# 1. CONFIGURACIÓN DE GEMINI
+# 1. CONFIGURACIÓN DE GROQ
 # ---------------------------------------------------------------------------
 
-MODELO_GEMINI = "gemini-2.5-flash-lite"  # rápido, económico, ideal para resúmenes cortos
+MODELO_GROQ = "llama-3.3-70b-versatile"  # buena calidad en español, rápido, free tier generoso
+
+MAX_REINTENTOS = 3
+ESPERA_BASE_SEGUNDOS = 2  # backoff exponencial: 2s, 4s, 8s
+ESPERA_ENTRE_LLAMADAS_SEGUNDOS = 1.3  # ritmo entre llamadas para no chocar contra 30 RPM de Groq
 
 
-def resumir_noticia(titulo: str, snippet: str, pais: str, gemini_api_key: str) -> str:
+def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> Dict:
     """
-    Genera un resumen breve (2-3 frases) de una noticia usando Gemini.
-    Si Gemini falla por cualquier razón, hace fallback al snippet original
-    para que la app nunca se caiga por completo.
+    Genera un resumen breve (2-3 frases) de una noticia usando Groq
+    (Llama 3.3 70B).
+
+    Reintenta con backoff exponencial ante errores transitorios (rate
+    limit, timeouts, errores de servidor). Si todos los intentos
+    fallan, retorna el snippet original como respaldo seguro.
+
+    Returns
+    -------
+    {"resumen": str, "error_detalle": str | None}
+    El error_detalle queda registrado (no se le muestra al usuario final
+    en la UI por defecto, pero permite diagnosticar fallas reales en vez
+    de ocultarlas silenciosamente).
     """
-    cliente = genai.Client(api_key=gemini_api_key)
+    cliente = Groq(api_key=groq_api_key)
 
     prompt = (
         "Eres un analista de políticas públicas. Redacta un resumen breve "
@@ -43,17 +59,54 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, gemini_api_key: str) -
         "Resumen:"
     )
 
-    try:
-        respuesta = cliente.models.generate_content(
-            model=MODELO_GEMINI,
-            contents=prompt,
-        )
-        texto = (respuesta.text or "").strip()
-        return texto if texto else snippet
-    except Exception:
-        # Fallback seguro: si Gemini falla (rate limit, red, etc.)
-        # usamos el snippet crudo para no romper el flujo.
-        return snippet or "Resumen no disponible."
+    ultimo_error = None
+
+    for intento in range(1, MAX_REINTENTOS + 1):
+        try:
+            respuesta = cliente.chat.completions.create(
+                model=MODELO_GROQ,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_completion_tokens=200,
+            )
+            texto = (respuesta.choices[0].message.content or "").strip()
+            if texto:
+                return {"resumen": texto, "error_detalle": None}
+            ultimo_error = "Groq devolvió una respuesta vacía."
+            break
+
+        except groq.RateLimitError as e:
+            ultimo_error = f"Intento {intento}: RateLimitError (429) - {e}"
+            if intento < MAX_REINTENTOS:
+                time.sleep(ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1)))
+                continue
+
+        except groq.APIStatusError as e:
+            ultimo_error = f"Intento {intento}: APIStatusError {e.status_code} - {e}"
+            # 4xx distintos de 429 (key inválida, modelo no encontrado, etc.)
+            # no se arreglan reintentando — salimos del loop.
+            if e.status_code >= 500 and intento < MAX_REINTENTOS:
+                time.sleep(ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1)))
+                continue
+            break
+
+        except groq.APIConnectionError as e:
+            ultimo_error = f"Intento {intento}: APIConnectionError - {e}"
+            if intento < MAX_REINTENTOS:
+                time.sleep(ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1)))
+                continue
+
+        except Exception as e:
+            ultimo_error = f"Intento {intento}: {type(e).__name__} - {e}"
+            if intento < MAX_REINTENTOS:
+                time.sleep(ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1)))
+                continue
+
+    # Si llegamos aquí, todos los intentos fallaron.
+    return {
+        "resumen": snippet or "Resumen no disponible.",
+        "error_detalle": ultimo_error,
+    }
 
 
 def seleccionar_top_n(noticias: List[Dict], n: int = 3) -> List[Dict]:
@@ -73,8 +126,8 @@ def seleccionar_top_n(noticias: List[Dict], n: int = 3) -> List[Dict]:
 def procesar_pais(
     pais: str,
     noticias_crudas: List[Dict],
-    gemini_api_key: str,
-    n_noticias: int = 3,
+    groq_api_key: str,
+    n_noticias: int = 5,
 ) -> Dict:
     """
     Para un país: selecciona top-N noticias y genera resumen de cada una.
@@ -82,35 +135,45 @@ def procesar_pais(
     Returns
     -------
     {"pais": str, "noticias": [{"titulo", "fuente", "fecha", "link", "resumen"}],
-     "sin_resultados": bool}
+     "sin_resultados": bool, "errores_llm": [str, ...]}
     """
     top = seleccionar_top_n(noticias_crudas, n_noticias)
 
     if not top:
-        return {"pais": pais, "noticias": [], "sin_resultados": True}
+        return {"pais": pais, "noticias": [], "sin_resultados": True, "errores_llm": []}
 
     procesadas = []
-    for noticia in top:
-        resumen = resumir_noticia(
+    errores_llm = []
+    for i, noticia in enumerate(top):
+        if i > 0:
+            # Pequeña pausa entre llamadas consecutivas para repartir el
+            # volumen dentro del límite de 30 solicitudes/minuto de Groq
+            # (con 10 países x 5 noticias = 50 llamadas por ejecución).
+            time.sleep(ESPERA_ENTRE_LLAMADAS_SEGUNDOS)
+
+        resultado = resumir_noticia(
             titulo=noticia["titulo"],
             snippet=noticia.get("snippet", ""),
             pais=pais,
-            gemini_api_key=gemini_api_key,
+            groq_api_key=groq_api_key,
         )
+        if resultado["error_detalle"]:
+            errores_llm.append(f"{noticia['titulo'][:50]}... -> {resultado['error_detalle']}")
+
         procesadas.append({
             "titulo": noticia["titulo"],
             "fuente": noticia.get("fuente", "Fuente desconocida"),
             "fecha": noticia.get("fecha", ""),
             "link": noticia.get("link", ""),
-            "resumen": resumen,
+            "resumen": resultado["resumen"],
         })
 
-    return {"pais": pais, "noticias": procesadas, "sin_resultados": False}
+    return {"pais": pais, "noticias": procesadas, "sin_resultados": False, "errores_llm": errores_llm}
 
 
 def procesar_todos_los_paises(
     noticias_por_pais: Dict[str, List[Dict]],
-    gemini_api_key: str,
+    groq_api_key: str,
     n_noticias: int = 3,
     progress_callback=None,
 ) -> List[Dict]:
@@ -126,7 +189,7 @@ def procesar_todos_los_paises(
             progress_callback(pais, i + 1, len(paises))
 
         resultado.append(
-            procesar_pais(pais, noticias_por_pais[pais], gemini_api_key, n_noticias)
+            procesar_pais(pais, noticias_por_pais[pais], groq_api_key, n_noticias)
         )
 
     return resultado

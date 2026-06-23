@@ -14,7 +14,7 @@ país** para refrescar solo uno sin gastar cuota en los otros 9.
 ```
 app.py          -> Interfaz Streamlit, orquesta los dos agentes + caché
 scraper.py       -> AGENTE 1: recolecta noticias vía SerpAPI (google_news)
-summarizer.py    -> AGENTE 2: resume con Gemini + genera el .docx
+summarizer.py    -> AGENTE 2: resume con Groq (Llama 3.3 70B) + genera el .docx
 cache.py         -> Caché diario por país en SQLite (cache_noticias.db)
 requirements.txt -> Dependencias
 ```
@@ -25,7 +25,7 @@ requirements.txt -> Dependencias
   se guarda en `cache_noticias.db` con clave `(país, fecha_de_hoy)`.
 - Si otro usuario (o tú mismo, recargando la página) vuelve a pedir ese
   país el mismo día, la app **lee del caché** en vez de volver a llamar
-  a SerpAPI/Gemini — cero gasto de cuota adicional.
+  a SerpAPI/Groq — cero gasto de cuota adicional.
 - El botón **"🔄 Regenerar"** dentro de cada pestaña de país **fuerza**
   una nueva búsqueda para ese país específico, sobrescribe su entrada
   en caché, y no toca el caché de los otros 9 países.
@@ -71,7 +71,7 @@ Edita `.streamlit/secrets.toml` y pon tus keys reales:
 
 ```toml
 SERPAPI_KEY = "tu_key_real_de_serpapi"
-GEMINI_API_KEY = "tu_key_real_de_gemini"
+GROQ_API_KEY = "tu_key_real_de_groq"
 ```
 
 Corre la app:
@@ -100,7 +100,7 @@ pestaña de país en vez de "🆕 Recién generado".
 4. Antes de desplegar (o después, en Settings → Secrets), pega:
    ```toml
    SERPAPI_KEY = "tu_key_real_de_serpapi"
-   GEMINI_API_KEY = "tu_key_real_de_gemini"
+   GROQ_API_KEY = "tu_key_real_de_groq"
    ```
 5. Deploy. Te dará una URL pública tipo `https://tu-app.streamlit.app`
    que puedes compartir o usar a diario.
@@ -115,9 +115,17 @@ pestaña de país en vez de "🆕 Recién generado".
   se benefician de la primera búsqueda), no reduce el consumo si solo
   hay un usuario corriéndolo diariamente. Para uso diario sostenido,
   considera el plan de pago más económico de SerpAPI.
-- **Gemini (gemini-2.5-flash-lite):** tiene un free tier bastante
-  generoso por minuto/día; con 10 países × 3 noticias = 30 llamadas por
-  ejecución, deberías estar cómodo incluso corriendo varias veces al día.
+- **Groq (llama-3.3-70b-versatile), free tier:** 30 solicitudes/minuto,
+  1,000 solicitudes/día, 12,000 tokens/minuto. Con **5 noticias por
+  país × 10 países = 50 llamadas por ejecución**, el límite diario
+  (1,000 RPD) sobra de lejos, pero el límite **por minuto (30 RPM)**
+  sí puede alcanzarse si las 50 llamadas se disparan muy rápido — el
+  código ya maneja esto con reintentos automáticos y espera progresiva
+  (2s, 4s, 8s) cuando Groq responde "demasiadas peticiones", así que la
+  ejecución simplemente tarda un poco más en esos casos en vez de fallar.
+  Si notas que muchos países muestran "⚠️ ver detalle técnico" con error
+  429, es buena señal de que estás chocando contra el límite por minuto;
+  no es un problema grave, solo toma más tiempo terminar.
 
 ## Posibles mejoras futuras
 
@@ -128,4 +136,7 @@ pestaña de país en vez de "🆕 Recién generado".
 - Programar la ejecución automática diaria (ej. con un cron job o
   GitHub Actions) que llene el caché una vez al día, para que los
   usuarios siempre encuentren el reporte ya listo sin esperar.
+- Agregar una pequeña espera entre llamadas consecutivas a Groq (ej.
+  1-2 segundos) para repartir las 50 llamadas dentro del límite de 30
+  RPM sin depender tanto de los reintentos.
 

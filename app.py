@@ -4,7 +4,7 @@ APP PRINCIPAL — Streamlit (app.py)
 Orquesta los dos agentes, con caché diario y regeneración por país:
 
   Agente 1 (scraper.py)     -> recolecta noticias crudas vía SerpAPI
-  Agente 2 (summarizer.py)  -> resume con Gemini y genera el .docx
+  Agente 2 (summarizer.py)  -> resume con Groq (Llama 3.3 70B) y genera el .docx
   cache.py                  -> evita repetir búsquedas el mismo día
 
 Para correr localmente:
@@ -16,7 +16,7 @@ Para desplegar en Streamlit Cloud:
     2. En share.streamlit.io conecta el repo.
     3. En "Settings -> Secrets" pega:
            SERPAPI_KEY = "tu_key_de_serpapi"
-           GEMINI_API_KEY = "tu_key_de_gemini"
+           GROQ_API_KEY = "tu_key_de_groq"
 """
 
 import streamlit as st
@@ -46,10 +46,10 @@ st.markdown(
     "Esta aplicación combina dos agentes automatizados:\n"
     "1. **Agente recolector** — busca noticias recientes (últimas 24h) vía SerpAPI.\n"
     "2. **Agente sintetizador** — selecciona las noticias más relevantes por país, "
-    "las resume con Gemini y genera un documento Word descargable.\n\n"
+    "las resume con Groq y genera un documento Word descargable.\n\n"
     "🗄️ Los resultados de cada país se **cachean por el día** — si tú u otro "
     "usuario ya consultaron un país hoy, no se vuelve a gastar cuota de "
-    "SerpAPI/Gemini para ese país a menos que pidas regenerarlo explícitamente."
+    "SerpAPI/Groq para ese país a menos que pidas regenerarlo explícitamente."
 )
 
 # ---------------------------------------------------------------------------
@@ -65,21 +65,21 @@ def obtener_api_key(nombre_secret: str, label: str) -> str:
 with st.sidebar:
     st.header("⚙️ Configuración")
     serpapi_key = obtener_api_key("SERPAPI_KEY", "SerpAPI Key")
-    gemini_key = obtener_api_key("GEMINI_API_KEY", "Gemini API Key")
+    groq_key = obtener_api_key("GROQ_API_KEY", "Groq API Key")
 
     st.divider()
-    n_noticias = st.slider("Noticias por país", min_value=1, max_value=5, value=3)
+    n_noticias = st.slider("Noticias por país", min_value=1, max_value=5, value=5)
 
     st.divider()
     st.caption(f"Países cubiertos ({len(PAISES)}):")
     st.caption(", ".join(PAISES))
     st.caption(f"Tema de búsqueda: *{TEMA_BASE}*")
 
-claves_listas = bool(serpapi_key) and bool(gemini_key)
+claves_listas = bool(serpapi_key) and bool(groq_key)
 
 if not claves_listas:
     st.warning(
-        "⚠️ Ingresa tu **SerpAPI Key** y tu **Gemini API Key** en el panel "
+        "⚠️ Ingresa tu **SerpAPI Key** y tu **Groq API Key** en el panel "
         "lateral izquierdo para poder generar el reporte."
     )
 
@@ -100,7 +100,7 @@ def procesar_un_pais(pais: str, forzar: bool = False) -> dict:
                      "_actualizado_en": cacheado["actualizado_en"]}
 
     noticias_crudas = buscar_noticias_pais(pais, serpapi_key)
-    reporte = procesar_pais(pais, noticias_crudas, gemini_key, n_noticias)
+    reporte = procesar_pais(pais, noticias_crudas, groq_key, n_noticias)
     cache.guardar_cache_pais(pais, noticias_crudas, reporte)
 
     return {**reporte, "_desde_cache": False, "_actualizado_en": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -193,6 +193,14 @@ if st.session_state.reportes:
                     if noticia.get("link"):
                         st.markdown(f"[Ver noticia completa]({noticia['link']})")
                     st.markdown("---")
+
+                if reporte.get("errores_llm"):
+                    with st.expander(
+                        f"⚠️ {len(reporte['errores_llm'])} resumen(es) usaron el "
+                        "texto original por un error de Groq — ver detalle técnico"
+                    ):
+                        for err in reporte["errores_llm"]:
+                            st.code(err, language=None)
 
     # -----------------------------------------------------------------
     # DESCARGA DEL DOCUMENTO WORD (combina todos los países disponibles,
