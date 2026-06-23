@@ -261,10 +261,10 @@ def _configurar_estilos(doc: Document):
     rfonts.set(qn("w:eastAsia"), "Arial")
 
 
-def _agregar_portada(doc: Document, fecha_str: str):
+def _agregar_portada(doc: Document, fecha_str: str, titulo_texto: str, nota_texto: str):
     titulo = doc.add_paragraph()
     titulo.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = titulo.add_run("Resumen de Noticias\nProgramas de Protección Social en Centroamérica y el Caribe")
+    run = titulo.add_run(titulo_texto)
     run.font.size = Pt(22)
     run.font.bold = True
     run.font.color.rgb = COLOR_TITULO
@@ -278,10 +278,7 @@ def _agregar_portada(doc: Document, fecha_str: str):
 
     nota = doc.add_paragraph()
     nota.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run3 = nota.add_run(
-        "Países incluidos: Costa Rica, Cuba, El Salvador, Guatemala, Haití, "
-        "Honduras, México, Nicaragua, Panamá y República Dominicana."
-    )
+    run3 = nota.add_run(nota_texto)
     run3.font.size = Pt(10)
     run3.font.color.rgb = COLOR_GRIS
 
@@ -346,6 +343,10 @@ def generar_documento_word(reportes_por_pais: List[Dict]) -> io.BytesIO:
     """
     Genera el .docx final en memoria (BytesIO) — ideal para servirlo
     directamente como descarga desde Streamlit sin tocar el disco.
+
+    Si reportes_por_pais contiene un solo país, el título y la nota de
+    portada se adaptan automáticamente para reflejar que es un reporte
+    individual, en vez del título genérico de los 10 países.
     """
     doc = Document()
     _configurar_estilos(doc)
@@ -357,7 +358,16 @@ def generar_documento_word(reportes_por_pais: List[Dict]) -> io.BytesIO:
     ahora = datetime.now()
     fecha_str = f"{ahora.day} de {MESES_ES[ahora.month]} de {ahora.year}, {ahora.strftime('%H:%M')}"
 
-    _agregar_portada(doc, fecha_str)
+    if len(reportes_por_pais) == 1:
+        pais_unico = reportes_por_pais[0]["pais"]
+        titulo_texto = f"Resumen de Noticias\nProgramas de Protección Social en {pais_unico}"
+        nota_texto = f"Reporte individual del país: {pais_unico}."
+    else:
+        titulo_texto = "Resumen de Noticias\nProgramas de Protección Social en Centroamérica y el Caribe"
+        nombres = [r["pais"] for r in reportes_por_pais]
+        nota_texto = f"Países incluidos: {', '.join(nombres[:-1])} y {nombres[-1]}." if len(nombres) > 1 else f"País incluido: {nombres[0]}."
+
+    _agregar_portada(doc, fecha_str, titulo_texto, nota_texto)
 
     for datos_pais in reportes_por_pais:
         _agregar_pais(doc, datos_pais)

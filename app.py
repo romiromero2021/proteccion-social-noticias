@@ -20,11 +20,21 @@ Para desplegar en Streamlit Cloud:
 """
 
 import streamlit as st
+import unicodedata
 from datetime import datetime
 
 from scraper import buscar_noticias_pais, PAISES, TEMA_BASE
 from summarizer import procesar_pais, generar_documento_word
 import cache
+
+
+def _normalizar_nombre_archivo(texto: str) -> str:
+    """Quita tildes/diacríticos y reemplaza espacios por guion bajo,
+    para nombres de archivo compatibles con cualquier sistema."""
+    sin_tildes = unicodedata.normalize("NFKD", texto)
+    sin_tildes = "".join(c for c in sin_tildes if not unicodedata.combining(c))
+    return sin_tildes.lower().replace(" ", "_")
+
 
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN DE PÁGINA E INICIALIZACIÓN
@@ -250,3 +260,39 @@ if st.session_state.reportes:
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         type="primary",
     )
+
+    # -----------------------------------------------------------------
+    # DESCARGA DE UN SOLO PAÍS (documento Word con solo sus 5 noticias)
+    # -----------------------------------------------------------------
+    if paises_listos:
+        st.divider()
+        st.markdown("### 📍 O descarga solo un país")
+
+        col_select, col_download = st.columns([2, 1])
+        with col_select:
+            pais_elegido = st.selectbox(
+                "Elige un país",
+                options=paises_listos,
+                key="selector_pais_individual",
+                label_visibility="collapsed",
+            )
+
+        reporte_pais_elegido = st.session_state.reportes[pais_elegido]
+        docx_pais_individual = generar_documento_word([{
+            "pais": reporte_pais_elegido["pais"],
+            "sin_resultados": reporte_pais_elegido["sin_resultados"],
+            "noticias": reporte_pais_elegido["noticias"],
+        }])
+
+        nombre_archivo_pais = (
+            f"reporte_{_normalizar_nombre_archivo(pais_elegido)}_{fecha_hoy}.docx"
+        )
+
+        with col_download:
+            st.download_button(
+                label=f"⬇️ Descargar {pais_elegido}",
+                data=docx_pais_individual,
+                file_name=nombre_archivo_pais,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
