@@ -4,7 +4,7 @@ CACHÉ (cache.py)
 Capa de persistencia compartida entre los dos agentes.
 
 Objetivo: si varios usuarios abren la app el mismo día, no se repiten
-búsquedas en SerpAPI ni llamadas a Gemini para un país ya consultado
+búsquedas en SerpAPI ni llamadas a Groq para un país ya consultado
 hoy. También habilita la regeneración "país por país" sin perder los
 resultados ya cacheados de los otros países.
 
@@ -126,3 +126,22 @@ def limpiar_cache_antiguo(dias_a_conservar: int = 3):
     with _conectar() as conn:
         conn.execute("DELETE FROM cache_pais_dia WHERE fecha < ?", (fecha_limite,))
         conn.commit()
+
+
+def borrar_cache_de_hoy() -> int:
+    """
+    Borra TODO el caché del día de hoy (los 10 países), sin tocar caché
+    de días anteriores. Útil después de cambiar el código (ej. cambiar
+    de 3 a 5 noticias por país) para forzar que la próxima búsqueda
+    regenere todo con la lógica nueva, en vez de servir resultados
+    cacheados con la lógica vieja.
+
+    Returns
+    -------
+    Cantidad de filas borradas.
+    """
+    fecha = _fecha_hoy()
+    with _conectar() as conn:
+        cursor = conn.execute("DELETE FROM cache_pais_dia WHERE fecha = ?", (fecha,))
+        conn.commit()
+        return cursor.rowcount

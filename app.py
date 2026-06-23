@@ -39,6 +39,14 @@ st.set_page_config(
 cache.inicializar_db()
 cache.limpiar_cache_antiguo(dias_a_conservar=3)
 
+# ---------------------------------------------------------------------------
+# ESTADO DE SESIÓN (se inicializa temprano para que el sidebar pueda usarlo)
+# ---------------------------------------------------------------------------
+
+if "reportes" not in st.session_state:
+    # dict {pais: reporte} — se va llenando a medida que se procesan países
+    st.session_state.reportes = {}
+
 st.title("📰 Resumen Diario de Noticias")
 st.subheader("Programas de Protección Social en Centroamérica y el Caribe")
 
@@ -69,6 +77,17 @@ with st.sidebar:
 
     st.divider()
     n_noticias = st.slider("Noticias por país", min_value=1, max_value=5, value=5)
+
+    st.divider()
+    if st.button("🗑️ Borrar caché de hoy", use_container_width=True):
+        cantidad = cache.borrar_cache_de_hoy()
+        st.session_state.reportes = {}  # también limpiar lo que se ve en pantalla
+        st.success(f"Caché de hoy borrado ({cantidad} país(es)). Vuelve a buscar para regenerar todo.")
+    st.caption(
+        "Usa esto si acabas de actualizar el código de la app y quieres "
+        "que la próxima búsqueda ignore resultados guardados con la "
+        "lógica anterior (ej. cambios en cantidad de noticias o modelo)."
+    )
 
     st.divider()
     st.caption(f"Países cubiertos ({len(PAISES)}):")
@@ -105,14 +124,6 @@ def procesar_un_pais(pais: str, forzar: bool = False) -> dict:
 
     return {**reporte, "_desde_cache": False, "_actualizado_en": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
-
-# ---------------------------------------------------------------------------
-# ESTADO DE SESIÓN
-# ---------------------------------------------------------------------------
-
-if "reportes" not in st.session_state:
-    # dict {pais: reporte} — se va llenando a medida que se procesan países
-    st.session_state.reportes = {}
 
 # ---------------------------------------------------------------------------
 # BOTÓN PRINCIPAL: PROCESAR TODOS LOS PAÍSES (usa caché cuando aplica)
