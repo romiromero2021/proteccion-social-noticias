@@ -297,7 +297,7 @@ def _agregar_pais(doc: Document, datos_pais: Dict):
         p = doc.add_paragraph()
         run_vacio = p.add_run(
             "No se encontraron noticias relevantes sobre programas de "
-            "protección social en las últimas 24 horas para este país."
+            "protección social en la última semana para este país."
         )
         run_vacio.font.italic = True
         run_vacio.font.color.rgb = COLOR_GRIS

@@ -41,7 +41,7 @@ def _normalizar_nombre_archivo(texto: str) -> str:
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Noticias: Protección Social en México, Centroamérica y el Caribe",
+    page_title="Noticias: Protección Social en Centroamérica y el Caribe",
     page_icon="📰",
     layout="wide",
 )
@@ -58,11 +58,11 @@ if "reportes" not in st.session_state:
     st.session_state.reportes = {}
 
 st.title("📰 Resumen Diario de Noticias")
-st.subheader("Programas de Protección Social en México, Centroamérica y el Caribe")
+st.subheader("Programas de Protección Social en Centroamérica y el Caribe")
 
 st.markdown(
     "Esta aplicación combina dos agentes automatizados:\n"
-    "1. **Agente recolector** — busca noticias recientes (últimas 24h) vía SerpAPI.\n"
+    "1. **Agente recolector** — busca noticias recientes (última semana) vía SerpAPI.\n"
     "2. **Agente sintetizador** — selecciona las noticias más relevantes por país, "
     "las resume con Groq y genera un documento Word descargable.\n\n"
     "🗄️ Los resultados de cada país se **cachean por el día** — si tú u otro "
@@ -205,7 +205,7 @@ if st.session_state.reportes:
                     st.caption(f"🆕 Recién generado — {reporte['_actualizado_en']}")
 
             if reporte["sin_resultados"]:
-                st.info("No se encontraron noticias relevantes en las últimas 24 horas.")
+                st.info("No se encontraron noticias relevantes en la última semana.")
             else:
                 for i, noticia in enumerate(reporte["noticias"], start=1):
                     st.markdown(f"**{i}. {noticia['titulo']}**")

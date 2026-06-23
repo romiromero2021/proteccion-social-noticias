@@ -3,7 +3,8 @@ AGENTE 1 — Recolector de noticias (scraper.py)
 ================================================
 Responsabilidad única: dado un país y un tema, consultar SerpAPI
 (motor google_news) y devolver una lista de noticias crudas
-(título, fuente, fecha, snippet, link), filtradas a las últimas 24h.
+(título, fuente, fecha, snippet, link), filtradas a la última semana
+por defecto (ver parámetro rango_tiempo).
 
 No interpreta ni resume nada — esa es responsabilidad del Agente 2.
 """
@@ -40,7 +41,7 @@ def buscar_noticias_pais(
     api_key: str,
     tema: str = TEMA_BASE,
     max_resultados: int = 8,
-    rango_tiempo: str = "qdr:d",  # qdr:d = últimas 24 horas
+    rango_tiempo: str = "qdr:w",  # qdr:w = última semana (ver nota abajo)
 ) -> List[Dict]:
     """
     Busca noticias recientes para un país usando SerpAPI (motor google_news).
@@ -51,9 +52,12 @@ def buscar_noticias_pais(
     api_key : tu API key de SerpAPI
     tema : tema de búsqueda (por defecto: programas de protección social)
     max_resultados : tope de noticias crudas a traer por país (se filtran
-                      luego a 3 relevantes en el Agente 2)
-    rango_tiempo : filtro temporal de SerpAPI. "qdr:d" = último día.
-                   Otras opciones: "qdr:w" (semana), "qdr:m" (mes).
+                      luego a 5 relevantes en el Agente 2)
+    rango_tiempo : filtro temporal real, enviado a SerpAPI como parámetro
+                   "tbs". Valores válidos: "qdr:d" (últimas 24h),
+                   "qdr:w" (última semana, valor por defecto — un tema
+                   institucional como este no siempre tiene noticias
+                   nuevas cada 24h en los 10 países), "qdr:m" (mes).
 
     Returns
     -------
@@ -66,6 +70,7 @@ def buscar_noticias_pais(
         "q": query,
         "gl": _codigo_pais(pais),   # país de origen de la búsqueda
         "hl": "es",                 # idioma de resultados
+        "tbs": rango_tiempo,        # filtro temporal real (antes no se enviaba)
         "api_key": api_key,
     }
 
