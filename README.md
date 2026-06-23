@@ -1,4 +1,4 @@
-# Resumen Diario: Programas de Protección Social (CA + Caribe)
+# Resumen Diario: Programas de Protección Social (México, CA + Caribe)
 
 App con dos agentes que recolectan y resumen noticias diarias sobre
 programas de protección social en Costa Rica, Cuba, El Salvador,
