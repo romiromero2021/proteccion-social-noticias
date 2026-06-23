@@ -30,6 +30,32 @@ MAX_REINTENTOS = 3
 ESPERA_BASE_SEGUNDOS = 2  # backoff exponencial: 2s, 4s, 8s
 ESPERA_ENTRE_LLAMADAS_SEGUNDOS = 1.3  # ritmo entre llamadas para no chocar contra 30 RPM de Groq
 
+# Frases típicas de una "meta-explicación" (el modelo explica que no puede
+# resumir en vez de resumir). Si el resumen generado contiene alguna de
+# estas, se descarta y se usa el título como respaldo. Es una red de
+# seguridad adicional al prompt — los LLMs no son 100% deterministas.
+_PATRONES_META_EXPLICACION = (
+    "no hay información disponible",
+    "no se proporciona",
+    "no es posible ofrecer un resumen",
+    "no es posible generar un resumen",
+    "no cuento con suficiente información",
+    "no se cuenta con suficiente información",
+    "no dispongo de suficiente información",
+    "el extracto no contiene",
+    "el extracto original no proporciona",
+    "no se incluye información adicional",
+    "sin más contexto no es posible",
+    "no se puede redactar un resumen",
+)
+
+
+def _es_meta_explicacion(texto: str) -> bool:
+    """Detecta si el texto generado es una explicación de por qué no se
+    puede resumir, en vez de un resumen real."""
+    texto_normalizado = texto.lower()
+    return any(patron in texto_normalizado for patron in _PATRONES_META_EXPLICACION)
+
 
 def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> Dict:
     """
@@ -53,9 +79,20 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
         "Eres un analista de políticas públicas. Redacta un resumen breve "
         "(máximo 3 frases, en español neutro, tono informativo y objetivo) "
         "de la siguiente noticia sobre programas de protección social en "
-        f"{pais}. No inventes datos que no estén en el texto fuente.\n\n"
+        f"{pais}.\n\n"
         f"Título: {titulo}\n"
         f"Extracto original: {snippet}\n\n"
+        "Instrucciones importantes:\n"
+        "- No inventes datos, cifras ni detalles que no estén en el título o el extracto.\n"
+        "- Si el extracto es breve o vago, igual redacta un resumen útil basándote en "
+        "lo que el título y el extracto sí permiten afirmar (por ejemplo, el tema "
+        "general, la institución involucrada, o la acción mencionada).\n"
+        "- NUNCA respondas explicando que no hay suficiente información, que el "
+        "extracto es insuficiente, o frases similares sobre la falta de datos. "
+        "En su lugar, redacta como resumen una versión breve y natural del propio "
+        "título, en tono informativo.\n"
+        "- Responde ÚNICAMENTE con el resumen final, sin introducciones como "
+        "'Resumen:' ni comentarios sobre tu propio proceso.\n\n"
         "Resumen:"
     )
 
@@ -71,6 +108,12 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
             )
             texto = (respuesta.choices[0].message.content or "").strip()
             if texto:
+                if _es_meta_explicacion(texto):
+                    # El modelo, a pesar de la instrucción, respondió explicando
+                    # que no tiene suficiente información en vez de resumir.
+                    # Red de seguridad: usamos el título como resumen, en vez
+                    # de mostrarle al usuario ese tipo de respuesta.
+                    return {"resumen": titulo, "error_detalle": None}
                 return {"resumen": texto, "error_detalle": None}
             ultimo_error = "Groq devolvió una respuesta vacía."
             break
