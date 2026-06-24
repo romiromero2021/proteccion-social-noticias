@@ -242,6 +242,14 @@ def _completar_con_verificacion_llm(
     confirmen relevantes hasta completar n_necesarias o agotar las
     candidatas disponibles.
 
+    Deduplica por link contra las ya aceptadas (y entre las propias
+    descartadas_marginales): la misma noticia puede aparecer tanto en
+    "aceptadas" como en "descartadas_marginales" si las dos capas de
+    búsqueda (site: y anclas de texto) la trajeron por separado con
+    una clasificación distinta — sin este chequeo, el verificador
+    podía "rescatar" una noticia que ya estaba en el reporte, dejando
+    el mismo artículo duplicado con dos resúmenes distintos.
+
     Esto mantiene el costo de Groq bajo en el caso común y solo lo
     activa cuando realmente hace falta completar el cupo de noticias.
     """
@@ -249,11 +257,21 @@ def _completar_con_verificacion_llm(
         return aceptadas[:n_necesarias]
 
     resultado = list(aceptadas)
-    for i, candidata in enumerate(descartadas_marginales):
+    links_ya_incluidos = {n["link"] for n in resultado if n.get("link")}
+
+    candidatas_sin_revisar = 0
+    for candidata in descartadas_marginales:
         if len(resultado) >= n_necesarias:
             break
-        if i > 0:
+
+        link = candidata.get("link")
+        if link and link in links_ya_incluidos:
+            continue  # ya está en el reporte (vino de la otra capa) — no revisar de nuevo
+
+        if candidatas_sin_revisar > 0:
             time.sleep(ESPERA_ENTRE_LLAMADAS_SEGUNDOS)
+        candidatas_sin_revisar += 1
+
         es_relevante = verificar_relevancia_llm(
             titulo=candidata["titulo"],
             snippet=candidata.get("snippet", ""),
@@ -262,6 +280,8 @@ def _completar_con_verificacion_llm(
         )
         if es_relevante:
             resultado.append(candidata)
+            if link:
+                links_ya_incluidos.add(link)
 
     return resultado
 
