@@ -1,33 +1,44 @@
 """
 AGENTE 1 — Recolector de noticias (scraper.py)
 ================================================
-Responsabilidad única: dado un país, consultar SerpAPI con varios
-términos relacionados a protección/seguridad social y devolver una
-lista de noticias crudas (título, fuente, fecha, snippet, link),
-filtradas a la última semana por defecto, deduplicadas por link.
+Responsabilidad única: dado un país, consultar SerpAPI combinando
+términos temáticos con el nombre de la institución rectora de
+protección/desarrollo social de ese país, y devolver una lista de
+noticias crudas (título, fuente, fecha, snippet, link), filtradas a
+la última semana, sin noticias de otros países, y solo si son
+genuinamente relevantes al tema.
 
 Historial de correcciones:
   1. El motor "google_news" de SerpAPI no soporta de forma documentada
      el parámetro de filtro de fecha "tbs" — Google lo ignoraba en
-     silencio (se vieron noticias de hasta 2020 mezcladas con 2026).
-     Se corrigió usando el motor "google" + "tbm=nws", que sí lo
-     soporta oficialmente, más un filtro de respaldo en Python
+     silencio. Se corrigió usando el motor "google" + "tbm=nws", que
+     sí lo soporta oficialmente, más un filtro de respaldo en Python
      (_dentro_del_rango) que vuelve a chequear la fecha real de cada
      noticia, independiente de si la API filtró bien o no.
-  2. Una sola query de texto libre (sin comillas) perdía precisión por
-     país: Google devolvía noticias genéricas de protección social en
-     la región que no eran realmente sobre el país pedido. Se corrigió
-     usando el nombre del país entre comillas (frase exacta) y
-     combinando varios términos temáticos relacionados (protección
-     social, seguridad social, CEPAL) en lugar de un solo término fijo.
-
-  3. Aun con comillas y query precisa, Google a veces cuela noticias
-     que solo mencionan el país pero no tienen relación real con el
-     tema (ej. una noticia sobre buses chinos que de paso menciona
-     "el Gobierno de Nicaragua"). Se agregó un filtro de relevancia en
-     Python (_es_relevante_al_tema) que exige que el título o snippet
-     contenga al menos una palabra clave del tema — no basta con que
-     Google haya decidido que la query "calza".
+  2. Una sola query de texto libre perdía precisión por país: Google
+     devolvía noticias genéricas de protección social en la región
+     que no eran realmente sobre el país pedido. Se corrigió usando
+     el nombre del país entre comillas y combinando varios términos
+     temáticos relacionados (protección social, seguridad social,
+     CEPAL) con OR.
+  3. Aun con comillas, Google a veces cuela noticias que solo
+     mencionan el país pero no tienen relación real con el tema. Se
+     agregó un filtro de relevancia en Python (_es_relevante_al_tema)
+     que exige que el título o snippet contenga al menos una palabra
+     clave del tema.
+  4. ESTRATEGIA AMPLIADA (esta versión):
+     a) Se incluye en la query el nombre de la institución rectora de
+        protección/desarrollo social de cada país (ej. "IMAS" para
+        Costa Rica, "MIDES" para Panamá), lo que ancla la búsqueda al
+        país de forma mucho más específica que el nombre del país
+        solo, ya que esas instituciones casi nunca se mencionan en
+        noticias de otro país.
+     b) Se agregó un filtro de "exclusión de país cruzado"
+        (_menciona_otro_pais) que descarta una noticia si su título o
+        snippet menciona explícitamente alguno de los OTROS 9 países
+        de la lista (ej. una noticia que mencione "República
+        Dominicana" no debe aparecer en el reporte de Costa Rica).
+     c) Se amplió la lista de palabras clave de relevancia.
 
 No interpreta ni resume nada — esa es responsabilidad del Agente 2.
 """
@@ -52,30 +63,137 @@ PAISES = [
     "República Dominicana",
 ]
 
-# Términos temáticos que se combinan con el país para ampliar la
-# cobertura, sin perder el foco del tema. Se combinan con OR en una
+# Lista ampliada para el filtro de "exclusión de país cruzado"
+# (_menciona_otro_pais). Incluye los 10 países del proyecto MÁS otros
+# países de América Latina y España que frecuentemente aparecen como
+# ruido en estas búsquedas (ej. una nota sobre Venezuela, o una nota
+# de un periódico español que menciona "protección social" sin
+# relación con ningún país de la lista del proyecto).
+PAISES_A_EXCLUIR_SI_NO_BUSCADOS = PAISES + [
+    "Venezuela",
+    "Colombia",
+    "Argentina",
+    "Chile",
+    "Perú",
+    "Ecuador",
+    "Bolivia",
+    "Paraguay",
+    "Uruguay",
+    "Brasil",
+]
+
+# Demónimos/adjetivos derivados de cada país, para detectar menciones
+# indirectas (ej. una noticia dice "el gobierno venezolano" en vez de
+# "Venezuela" explícitamente). Mapeo país -> lista de variantes a buscar
+# ADEMÁS del nombre del país. No es exhaustivo, cubre los casos más
+# comunes en titulares de noticias.
+DEMONIMOS_PAIS = {
+    "Costa Rica": ["costarricense", "costarricenses"],
+    "Cuba": ["cubano", "cubana", "cubanos", "cubanas"],
+    "El Salvador": ["salvadoreño", "salvadoreña", "salvadoreños", "salvadoreñas"],
+    "Guatemala": ["guatemalteco", "guatemalteca", "guatemaltecos", "guatemaltecas"],
+    "Haití": ["haitiano", "haitiana", "haitianos", "haitianas"],
+    "Honduras": ["hondureño", "hondureña", "hondureños", "hondureñas"],
+    "México": ["mexicano", "mexicana", "mexicanos", "mexicanas"],
+    "Nicaragua": ["nicaragüense", "nicaragüenses"],
+    "Panamá": ["panameño", "panameña", "panameños", "panameñas"],
+    "República Dominicana": ["dominicano", "dominicana", "dominicanos", "dominicanas"],
+    "Venezuela": ["venezolano", "venezolana", "venezolanos", "venezolanas"],
+    "Colombia": ["colombiano", "colombiana", "colombianos", "colombianas"],
+    "Argentina": ["argentino", "argentina", "argentinos", "argentinas"],
+    "Chile": ["chileno", "chilena", "chilenos", "chilenas"],
+    "Perú": ["peruano", "peruana", "peruanos", "peruanas"],
+    "Ecuador": ["ecuatoriano", "ecuatoriana", "ecuatorianos", "ecuatorianas"],
+    "Bolivia": ["boliviano", "boliviana", "bolivianos", "bolivianas"],
+    "Paraguay": ["paraguayo", "paraguaya", "paraguayos", "paraguayas"],
+    "Uruguay": ["uruguayo", "uruguaya", "uruguayos", "uruguayas"],
+    "Brasil": ["brasileño", "brasileña", "brasileños", "brasileñas", "brasilero", "brasilera"],
+}
+
+# ---------------------------------------------------------------------------
+# INSTITUCIONES RECTORAS DE PROTECCIÓN/DESARROLLO SOCIAL POR PAÍS
+# ---------------------------------------------------------------------------
+# Fuente principal: CEPAL - Red de Desarrollo Social de América Latina y el
+# Caribe (ReDeSoc), https://dds.cepal.org/redesoc/ministerios (consultado
+# 2026). El Salvador no aparece en esa tabla porque no tiene un ministerio
+# de desarrollo social centralizado; se usan sus dos instituciones más
+# relevantes al tema (Ministerio de Trabajo y Previsión Social, y
+# Ministerio de Desarrollo Local).
+#
+# MANTENIMIENTO: estos nombres cambian con cada gobierno (ej. Costa Rica
+# cambió de nombre en 2018, México en 2018, Argentina en 2023). Revisar
+# periódicamente contra la fuente de CEPAL arriba, o si una noticia del
+# propio país menciona un nombre institucional distinto al aquí registrado.
+INSTITUCIONES_PAIS = {
+    "Costa Rica": [
+        "Ministerio de Desarrollo Humano e Inclusión Social",
+        "IMAS",
+        "MDHIS",
+    ],
+    "Cuba": [
+        "Ministerio de Trabajo y Seguridad Social",
+        "MTSS",
+    ],
+    "El Salvador": [
+        "Ministerio de Trabajo y Previsión Social",
+        "Ministerio de Desarrollo Local",
+        "MTPS",
+        "MINDEL",
+    ],
+    "Guatemala": [
+        "Ministerio de Desarrollo Social",
+        "MIDES",
+    ],
+    "Haití": [
+        "Ministerio de Asuntos Sociales y Trabajo",
+        "MAST",
+    ],
+    "Honduras": [
+        "Secretaría de Desarrollo Social",
+        "SEDESOL Honduras",
+    ],
+    "México": [
+        "Secretaría del Bienestar",
+    ],
+    "Nicaragua": [
+        "Ministerio de la Familia, Adolescencia y Niñez",
+        "MIFAN",
+    ],
+    "Panamá": [
+        "Ministerio de Desarrollo Social",
+        "MIDES",
+        "CSS",
+    ],
+    "República Dominicana": [
+        "Gabinete de Coordinación de Políticas Sociales",
+        "Supérate",
+    ],
+}
+
+# Términos temáticos generales que se combinan con el país y su
+# institución para ampliar la cobertura. Se combinan con OR en una
 # sola query (no se multiplica el número de llamadas a SerpAPI).
 TERMINOS_TEMATICOS = [
     "programas de protección social",
     "seguridad social",
     "CEPAL protección social",
+    "desarrollo social",
+    "asistencia social",
+    "transferencias monetarias",
 ]
 
 # Palabras/fragmentos clave usados para el filtro de relevancia en
-# Python (_es_relevante_al_tema). Son más granulares que las frases
-# completas de arriba — basta que UNA aparezca en título o snippet
-# para considerar la noticia relevante. Incluye variaciones del
-# idioma (singular/plural, con o sin "de") y siglas de instituciones
-# de seguridad/protección social comunes en la región, porque un
-# snippet truncado por SerpAPI a menudo menciona la sigla (ej. "INSS")
-# en vez de la frase completa "seguridad social".
+# Python (_es_relevante_al_tema). Basta que UNA aparezca en título o
+# snippet para considerar la noticia relevante.
 PALABRAS_CLAVE_RELEVANCIA = [
     # Frases temáticas generales (insensibles a mayúsculas/minúsculas)
     "protección social", "proteccion social",
     "seguridad social", "seguro social",
+    "desarrollo social",
     "cepal",
     "pensión", "pensiones", "pensionado", "pensionados",
     "transferencia monetaria", "transferencias monetarias",
+    "transferencia condicionada", "transferencias condicionadas",
     "asistencia social",
     "programa social", "programas sociales",
     "bono social", "bonos sociales",
@@ -83,24 +201,25 @@ PALABRAS_CLAVE_RELEVANCIA = [
     "ayuda social", "ayudas sociales",
     "beneficio social", "beneficios sociales",
     "red de protección", "red de proteccion",
-    "transferencia condicionada", "transferencias condicionadas",
-    # Siglas de instituciones de seguridad/protección social de 4+
-    # letras (insensibles a mayúsculas — riesgo bajo de ambigüedad)
-    "inss",      # Nicaragua, Honduras
-    "imas",      # Costa Rica
-    "ccss",      # Costa Rica (Caja Costarricense de Seguro Social)
-    "issste",    # México
-    "imss",      # México
-    "sipen",     # República Dominicana
+    "política social", "politica social", "políticas sociales", "politicas sociales",
+    "gasto social", "inversión social", "inversion social",
+    "pobreza extrema", "reducción de la pobreza", "reduccion de la pobreza",
+    "vulnerabilidad social", "población vulnerable", "poblacion vulnerable",
+    "cuidados de larga duración", "cuidados de larga duracion",
+    "personas adultas mayores", "adultos mayores",
+    "primera infancia",
+    # Siglas de instituciones de 4+ letras (riesgo bajo de ambigüedad)
+    "inss", "imas", "ccss", "issste", "imss", "sipen",
+    "mides", "mifan", "mast", "mdhis", "mtps", "mindel",
+    "superate", "supérate",
 ]
 
 # Siglas de 2-3 letras: alto riesgo de ambigüedad en contextos no
 # relacionados (ej. "css" de hojas de estilo). Se buscan SOLO en
-# mayúsculas exactas dentro del texto original (antes de pasar a
-# minúsculas), ya que así es como aparecen las siglas institucionales
-# reales en una noticia, a diferencia de términos técnicos en minúsculas.
+# mayúsculas exactas dentro del texto original.
 SIGLAS_ESTRICTAS_MAYUSCULAS = [
     "CSS",   # Panamá (Caja de Seguro Social)
+    "RD",    # República Dominicana (abreviación común en titulares)
 ]
 
 TEMA_BASE = TERMINOS_TEMATICOS[0]  # se mantiene por compatibilidad con código existente
@@ -113,22 +232,27 @@ DIAS_MAXIMOS_ANTIGUEDAD = 10
 def construir_query(pais: str, terminos: Optional[List[str]] = None) -> str:
     """
     Construye la query de búsqueda para un país específico, combinando
-    varios términos temáticos relacionados (protección social, seguridad
-    social, CEPAL) con el operador OR de Google, en una sola búsqueda
-    por país (para no multiplicar el consumo de cuota de SerpAPI).
+    términos temáticos (protección social, seguridad social, CEPAL...)
+    con el nombre del país Y el nombre de su institución rectora de
+    desarrollo/protección social, todo en una sola query con OR (sin
+    multiplicar el consumo de cuota de SerpAPI).
 
-    El país va entre comillas (frase exacta) para evitar que Google
-    devuelva noticias genéricas de la región que no son realmente
-    sobre ese país. Cada término temático también va entre comillas
-    para que el OR agrupe frases completas y no palabras sueltas.
+    Incluir la institución ancla la búsqueda al país de forma mucho
+    más específica que el nombre del país solo, porque esas
+    instituciones casi nunca se mencionan en noticias de otro país.
 
-    Ejemplo de query resultante:
-    ("programas de protección social" OR "seguridad social" OR
-     "CEPAL protección social") "Nicaragua"
+    Ejemplo de query resultante para Panamá:
+    ("programas de protección social" OR "seguridad social" OR ...)
+    ("Panamá" OR "Ministerio de Desarrollo Social" OR "MIDES" OR "CSS")
     """
     terminos = terminos or TERMINOS_TEMATICOS
     terminos_con_or = " OR ".join(f'"{t}"' for t in terminos)
-    return f'({terminos_con_or}) "{pais}"'
+
+    instituciones = INSTITUCIONES_PAIS.get(pais, [])
+    anclas_pais = [pais] + instituciones
+    anclas_con_or = " OR ".join(f'"{a}"' for a in anclas_pais)
+
+    return f'({terminos_con_or}) ({anclas_con_or})'
 
 
 def _es_relevante_al_tema(item: Dict, palabras_clave: Optional[List[str]] = None) -> bool:
@@ -136,16 +260,11 @@ def _es_relevante_al_tema(item: Dict, palabras_clave: Optional[List[str]] = None
     Filtro de relevancia en Python: True si el título o snippet de la
     noticia contiene al menos una de las palabras clave del tema.
 
-    Esto descarta ruido que Google incluye solo por mencionar el país,
-    sin relación real con protección/seguridad social (ej. una noticia
-    de transporte público que de paso nombra "el Gobierno de Nicaragua").
-
     Usa coincidencia de palabra completa (no subcadena) para evitar
     falsos positivos con siglas cortas. Las frases/siglas largas se
     buscan sin distinguir mayúsculas; las siglas de alto riesgo de
-    ambigüedad (SIGLAS_ESTRICTAS_MAYUSCULAS, ej. "CSS") solo cuentan
-    si aparecen en mayúsculas exactas en el texto original, ya que así
-    aparecen las siglas institucionales reales en una noticia.
+    ambigüedad (SIGLAS_ESTRICTAS_MAYUSCULAS) solo cuentan si aparecen
+    en mayúsculas exactas en el texto original.
     """
     palabras_clave = palabras_clave or PALABRAS_CLAVE_RELEVANCIA
     texto_original = f"{item.get('title', '')} {item.get('snippet', '')}"
@@ -163,6 +282,35 @@ def _es_relevante_al_tema(item: Dict, palabras_clave: Optional[List[str]] = None
         for sigla in SIGLAS_ESTRICTAS_MAYUSCULAS
     )
     return coincide_sigla_estricta
+
+
+def _menciona_otro_pais(item: Dict, pais_buscado: str) -> bool:
+    """
+    Filtro de exclusión de país cruzado: True si el título o snippet
+    de la noticia menciona explícitamente otro país (de los 10 del
+    proyecto, o de otros países de América Latina que frecuentemente
+    aparecen como ruido en estas búsquedas) distinto al que se está
+    buscando — ya sea por su nombre o por su demónimo/adjetivo (ej.
+    "venezolano" en vez de "Venezuela").
+
+    Esto descarta noticias que, aunque mencionen el país buscado o su
+    institución de forma tangencial, son realmente sobre otro país.
+
+    Nota: no se aplica al propio país buscado — solo a la mención
+    explícita de OTROS países (o sus demónimos) como palabra completa.
+    """
+    texto = f"{item.get('title', '')} {item.get('snippet', '')}".lower()
+
+    otros_paises = [p for p in PAISES_A_EXCLUIR_SI_NO_BUSCADOS if p != pais_buscado]
+
+    palabras_a_buscar = list(otros_paises)
+    for p in otros_paises:
+        palabras_a_buscar.extend(DEMONIMOS_PAIS.get(p, []))
+
+    return any(
+        re.search(r"\b" + re.escape(palabra.lower()) + r"\b", texto)
+        for palabra in palabras_a_buscar
+    )
 
 
 def _parsear_fecha_serpapi(item: Dict) -> Optional[datetime]:
@@ -213,8 +361,7 @@ def _dentro_del_rango(item: Dict, dias_maximos: int) -> bool:
     Filtro de respaldo en Python: True si la noticia está dentro del
     rango de antigüedad permitido, o si su fecha no se pudo determinar
     (en ese caso se deja pasar, para no descartar de más por un
-    formato de fecha inesperado — mejor un falso positivo ocasional
-    que perder noticias válidas por un parseo imperfecto).
+    formato de fecha inesperado).
     """
     fecha = _parsear_fecha_serpapi(item)
     if fecha is None:
@@ -233,24 +380,23 @@ def buscar_noticias_pais(
 ) -> List[Dict]:
     """
     Busca noticias recientes para un país usando SerpAPI, combinando
-    varios términos temáticos en una sola query (ver construir_query).
+    términos temáticos con el país y su institución rectora (ver
+    construir_query), y aplicando tres filtros de respaldo en Python:
+    fecha, relevancia temática, y exclusión de menciones de otro país.
 
     Parameters
     ----------
     pais : nombre del país (se usa también para etiquetar resultados)
     api_key : tu API key de SerpAPI
     terminos : lista de términos temáticos a combinar con OR (por
-                defecto: TERMINOS_TEMATICOS — protección social,
-                seguridad social, CEPAL protección social)
+                defecto: TERMINOS_TEMATICOS)
     max_resultados : tope de noticias crudas a traer por país (se filtran
                       luego a 5 relevantes en el Agente 2)
     rango_tiempo : filtro temporal enviado a SerpAPI como parámetro "tbs"
-                   (motor "google" + tbm=nws, que sí lo soporta). Valores
-                   válidos: "qdr:d" (24h), "qdr:w" (semana, por defecto),
-                   "qdr:m" (mes).
+                   (motor "google" + tbm=nws). Valores válidos: "qdr:d"
+                   (24h), "qdr:w" (semana, por defecto), "qdr:m" (mes).
     dias_maximos_antiguedad : filtro de respaldo aplicado en Python sobre
-                   la fecha real de cada noticia, independiente de si
-                   SerpAPI filtró correctamente o no.
+                   la fecha real de cada noticia.
 
     Returns
     -------
@@ -280,20 +426,22 @@ def buscar_noticias_pais(
 
     noticias_crudas = data.get("news_results", [])
 
-    # Filtro de respaldo 1 (fecha): descartar cualquier noticia que, al
-    # parsear su fecha real, resulte más vieja que el límite permitido —
-    # sin depender de que el filtro "tbs" de la API haya funcionado.
+    # Filtro de respaldo 1 (fecha)
     noticias_crudas = [
         item for item in noticias_crudas
         if _dentro_del_rango(item, dias_maximos_antiguedad)
     ]
 
-    # Filtro de respaldo 2 (relevancia): descartar noticias que Google
-    # devolvió por mencionar el país, pero cuyo título/snippet no tiene
-    # relación real con el tema (protección social, seguridad social, etc).
+    # Filtro de respaldo 2 (relevancia temática)
     noticias_crudas = [
         item for item in noticias_crudas
         if _es_relevante_al_tema(item)
+    ]
+
+    # Filtro de respaldo 3 (exclusión de país cruzado)
+    noticias_crudas = [
+        item for item in noticias_crudas
+        if not _menciona_otro_pais(item, pais)
     ]
 
     noticias = []
