@@ -1,4 +1,4 @@
-# Resumen Diario: Programas de Protección Social (México, CA + Caribe)
+# Resumen Diario: Programas de Protección Social (CA + Caribe)
 
 App con dos agentes que recolectan y resumen noticias diarias sobre
 programas de protección social en Costa Rica, Cuba, El Salvador,
@@ -115,6 +115,15 @@ pestaña de país en vez de "🆕 Recién generado".
   se benefician de la primera búsqueda), no reduce el consumo si solo
   hay un usuario corriéndolo diariamente. Para uso diario sostenido,
   considera el plan de pago más económico de SerpAPI.
+- **Fallback automático a 2 semanas:** si un país no tiene ninguna
+  noticia relevante en la última semana, el código reintenta
+  automáticamente con un rango de 2 semanas antes de devolver "sin
+  resultados" (esto evita reportar vacío cuando la cobertura
+  simplemente fue escasa esa semana puntual). Esto significa que, en
+  el peor caso (varios países sin cobertura semanal), el consumo real
+  de SerpAPI puede ser hasta el doble de lo esperado — un país con
+  cobertura normal sigue gastando solo 1 búsqueda, pero uno sin
+  cobertura gasta 2 (la de 1 semana + el reintento de 2 semanas).
 - **Groq (llama-3.3-70b-versatile), free tier:** 30 solicitudes/minuto,
   1,000 solicitudes/día, 12,000 tokens/minuto. Con **5 noticias por
   país × 10 países = 50 llamadas por ejecución**, el límite diario

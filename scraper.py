@@ -26,7 +26,7 @@ Historial de correcciones:
      agregó un filtro de relevancia en Python (_es_relevante_al_tema)
      que exige que el título o snippet contenga al menos una palabra
      clave del tema.
-  4. ESTRATEGIA AMPLIADA (esta versión):
+  4. ESTRATEGIA AMPLIADA:
      a) Se incluye en la query el nombre de la institución rectora de
         protección/desarrollo social de cada país (ej. "IMAS" para
         Costa Rica, "MIDES" para Panamá), lo que ancla la búsqueda al
@@ -39,6 +39,17 @@ Historial de correcciones:
         de la lista (ej. una noticia que mencione "República
         Dominicana" no debe aparecer en el reporte de Costa Rica).
      c) Se amplió la lista de palabras clave de relevancia.
+  5. Se detectó que varios nombres institucionales NO son únicos por
+     país: "Secretaría de Desarrollo Social" existe en México Y
+     Honduras Y municipios de Venezuela; "MTSS" es Cuba Y Uruguay. Una
+     noticia sobre "Secretaría de Desarrollo Social de Veracruz" (un
+     estado mexicano) colaba en el reporte de Honduras porque nunca
+     menciona "México" ni "mexicano" explícitamente, solo el nombre
+     del estado. Se agregó un filtro adicional (_dominio_de_otro_pais)
+     que detecta el TLD del link de la noticia (ej. ".uy", ".ve") y
+     descarta si pertenece a un país distinto al buscado — más
+     confiable que detectar nombres de subdivisiones, que son
+     prácticamente infinitas y no se pueden enumerar exhaustivamente.
 
 No interpreta ni resume nada — esa es responsabilidad del Agente 2.
 """
@@ -47,6 +58,7 @@ import re
 import requests
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
+from urllib.parse import urlparse
 
 SERPAPI_ENDPOINT = "https://serpapi.com/search"
 
@@ -139,6 +151,18 @@ INSTITUCIONES_PAIS = {
         "Ministerio de Desarrollo Local",
         "MTPS",
         "MINDEL",
+        "FISDL",          # Fondo de Inversión Social para el Desarrollo Local — cerrado
+                          # en 2021/2022, sus funciones pasaron a MINDEL y la DOM, pero
+                          # la prensa y la población siguen usando este nombre heredado
+        "Red Solidaria",  # nombre histórico del principal programa de transferencias
+                          # monetarias condicionadas, todavía referido así en prensa
+        "Pensión Básica Universal",
+        "Instituto Salvadoreño del Seguro Social",
+        "ISSS",                                   # seguridad social real (salud, pensiones)
+        "Superintendencia del Sistema Financiero",
+        "Ministerio de Hacienda",                  # gasto social / presupuesto social
+        "DIGESTYC",                                # Dirección General de Estadística y
+                                                    # Censos — fuente de informes de pobreza
     ],
     "Guatemala": [
         "Ministerio de Desarrollo Social",
@@ -182,6 +206,38 @@ TERMINOS_TEMATICOS = [
     "transferencias monetarias",
 ]
 
+# Términos temáticos en francés, exclusivos para Haití (único país
+# francófono de los 10). Sin esto, la búsqueda en español filtra de
+# raíz casi toda la prensa haitiana real (Le Nouvelliste, AyiboPost,
+# Radio Métropole, etc.), dejando solo cobertura *sobre* Haití escrita
+# por medios internacionales en español. Verificados contra fuentes
+# oficiales del MAST (Ministère des Affaires Sociales et du Travail).
+TERMINOS_TEMATICOS_FRANCES = [
+    "protection sociale",
+    "sécurité sociale",
+    "politique sociale",
+    "assistance sociale",
+    "transferts monétaires",
+    "ministère des affaires sociales",
+]
+
+# Palabras clave de relevancia en francés, para que _es_relevante_al_tema
+# reconozca noticias haitianas genuinas en ese idioma en vez de
+# descartarlas por no calzar con las palabras clave en español.
+PALABRAS_CLAVE_RELEVANCIA_FRANCES = [
+    "protection sociale",
+    "sécurité sociale", "securite sociale",
+    "politique sociale", "politiques sociales",
+    "assistance sociale",
+    "transfert monétaire", "transferts monétaires",
+    "développement social",
+    "pauvreté", "pauvrete",
+    "vulnérabilité", "vulnerabilite",
+    "ministère des affaires sociales",
+    "mast",
+    "pnpps",  # Politique Nationale de Protection et de Promotion Sociales
+]
+
 # Palabras/fragmentos clave usados para el filtro de relevancia en
 # Python (_es_relevante_al_tema). Basta que UNA aparezca en título o
 # snippet para considerar la noticia relevante.
@@ -212,6 +268,8 @@ PALABRAS_CLAVE_RELEVANCIA = [
     "inss", "imas", "ccss", "issste", "imss", "sipen",
     "mides", "mifan", "mast", "mdhis", "mtps", "mindel",
     "superate", "supérate",
+    "fisdl", "red solidaria",
+    "isss", "digestyc",
 ]
 
 # Siglas de 2-3 letras: alto riesgo de ambigüedad en contextos no
@@ -220,6 +278,8 @@ PALABRAS_CLAVE_RELEVANCIA = [
 SIGLAS_ESTRICTAS_MAYUSCULAS = [
     "CSS",   # Panamá (Caja de Seguro Social)
     "RD",    # República Dominicana (abreviación común en titulares)
+    "SSF",   # El Salvador (Superintendencia del Sistema Financiero) — 3 letras,
+             # riesgo de ambigüedad con otras siglas, se exige mayúsculas exactas
 ]
 
 TEMA_BASE = TERMINOS_TEMATICOS[0]  # se mantiene por compatibilidad con código existente
@@ -241,11 +301,19 @@ def construir_query(pais: str, terminos: Optional[List[str]] = None) -> str:
     más específica que el nombre del país solo, porque esas
     instituciones casi nunca se mencionan en noticias de otro país.
 
+    Para Haití (único país francófono de los 10), se agregan también
+    los términos temáticos en francés (TERMINOS_TEMATICOS_FRANCES),
+    para no perder la cobertura de prensa local haitiana real, que en
+    su mayoría publica en francés o criollo haitiano.
+
     Ejemplo de query resultante para Panamá:
     ("programas de protección social" OR "seguridad social" OR ...)
     ("Panamá" OR "Ministerio de Desarrollo Social" OR "MIDES" OR "CSS")
     """
     terminos = terminos or TERMINOS_TEMATICOS
+    if pais == "Haití":
+        terminos = list(terminos) + TERMINOS_TEMATICOS_FRANCES
+
     terminos_con_or = " OR ".join(f'"{t}"' for t in terminos)
 
     instituciones = INSTITUCIONES_PAIS.get(pais, [])
@@ -265,8 +333,13 @@ def _es_relevante_al_tema(item: Dict, palabras_clave: Optional[List[str]] = None
     buscan sin distinguir mayúsculas; las siglas de alto riesgo de
     ambigüedad (SIGLAS_ESTRICTAS_MAYUSCULAS) solo cuentan si aparecen
     en mayúsculas exactas en el texto original.
+
+    Siempre incluye también PALABRAS_CLAVE_RELEVANCIA_FRANCES (para
+    Haití), sin riesgo relevante de falsos positivos en los otros 9
+    países, ya que esas palabras en francés casi nunca aparecerían en
+    una noticia en español de un país hispanohablante.
     """
-    palabras_clave = palabras_clave or PALABRAS_CLAVE_RELEVANCIA
+    palabras_clave = list(palabras_clave or PALABRAS_CLAVE_RELEVANCIA) + PALABRAS_CLAVE_RELEVANCIA_FRANCES
     texto_original = f"{item.get('title', '')} {item.get('snippet', '')}"
     texto_lower = texto_original.lower()
 
@@ -370,47 +443,33 @@ def _dentro_del_rango(item: Dict, dias_maximos: int) -> bool:
     return fecha >= limite
 
 
-def buscar_noticias_pais(
+def _buscar_una_vez(
     pais: str,
     api_key: str,
-    terminos: Optional[List[str]] = None,
-    max_resultados: int = 10,
-    rango_tiempo: str = "qdr:w",  # qdr:w = última semana (filtro de SerpAPI)
-    dias_maximos_antiguedad: int = DIAS_MAXIMOS_ANTIGUEDAD,
+    query: str,
+    rango_tiempo: str,
+    max_resultados: int,
+    dias_maximos_antiguedad: int,
 ) -> List[Dict]:
     """
-    Busca noticias recientes para un país usando SerpAPI, combinando
-    términos temáticos con el país y su institución rectora (ver
-    construir_query), y aplicando tres filtros de respaldo en Python:
-    fecha, relevancia temática, y exclusión de menciones de otro país.
+    Ejecuta una sola consulta a SerpAPI con un rango de tiempo dado, y
+    aplica los 5 filtros de respaldo en Python (fecha, relevancia,
+    país cruzado por texto, dominio, subdivisiones de riesgo).
 
-    Parameters
-    ----------
-    pais : nombre del país (se usa también para etiquetar resultados)
-    api_key : tu API key de SerpAPI
-    terminos : lista de términos temáticos a combinar con OR (por
-                defecto: TERMINOS_TEMATICOS)
-    max_resultados : tope de noticias crudas a traer por país (se filtran
-                      luego a 5 relevantes en el Agente 2)
-    rango_tiempo : filtro temporal enviado a SerpAPI como parámetro "tbs"
-                   (motor "google" + tbm=nws). Valores válidos: "qdr:d"
-                   (24h), "qdr:w" (semana, por defecto), "qdr:m" (mes).
-    dias_maximos_antiguedad : filtro de respaldo aplicado en Python sobre
-                   la fecha real de cada noticia.
-
-    Returns
-    -------
-    Lista de dicts con keys: pais, titulo, fuente, fecha, snippet, link
+    Función auxiliar de buscar_noticias_pais — no se usa directamente
+    desde fuera del módulo. Existe separada para permitir el mecanismo
+    de fallback: reintentar con un rango más amplio si la primera
+    búsqueda no trae resultados relevantes (ver buscar_noticias_pais).
     """
-    query = construir_query(pais, terminos)
+    idioma_busqueda = "fr" if pais == "Haití" else "es"
 
     params = {
-        "engine": "google",         # motor que sí soporta "tbs" documentadamente
-        "tbm": "nws",                # resultados de la pestaña "Noticias"
+        "engine": "google",
+        "tbm": "nws",
         "q": query,
-        "gl": _codigo_pais(pais),   # país de origen de la búsqueda
-        "hl": "es",                 # idioma de resultados
-        "tbs": rango_tiempo,        # filtro temporal real
+        "gl": _codigo_pais(pais),
+        "hl": idioma_busqueda,
+        "tbs": rango_tiempo,
         "api_key": api_key,
     }
 
@@ -426,23 +485,11 @@ def buscar_noticias_pais(
 
     noticias_crudas = data.get("news_results", [])
 
-    # Filtro de respaldo 1 (fecha)
-    noticias_crudas = [
-        item for item in noticias_crudas
-        if _dentro_del_rango(item, dias_maximos_antiguedad)
-    ]
-
-    # Filtro de respaldo 2 (relevancia temática)
-    noticias_crudas = [
-        item for item in noticias_crudas
-        if _es_relevante_al_tema(item)
-    ]
-
-    # Filtro de respaldo 3 (exclusión de país cruzado)
-    noticias_crudas = [
-        item for item in noticias_crudas
-        if not _menciona_otro_pais(item, pais)
-    ]
+    noticias_crudas = [item for item in noticias_crudas if _dentro_del_rango(item, dias_maximos_antiguedad)]
+    noticias_crudas = [item for item in noticias_crudas if _es_relevante_al_tema(item)]
+    noticias_crudas = [item for item in noticias_crudas if not _menciona_otro_pais(item, pais)]
+    noticias_crudas = [item for item in noticias_crudas if not _dominio_de_otro_pais(item, pais)]
+    noticias_crudas = [item for item in noticias_crudas if not _menciona_subdivision_de_riesgo(item, pais)]
 
     noticias = []
     for item in noticias_crudas[:max_resultados]:
@@ -456,6 +503,69 @@ def buscar_noticias_pais(
         })
 
     return noticias
+
+
+def buscar_noticias_pais(
+    pais: str,
+    api_key: str,
+    terminos: Optional[List[str]] = None,
+    max_resultados: int = 10,
+    rango_tiempo: str = "qdr:w",  # qdr:w = última semana (filtro de SerpAPI)
+    dias_maximos_antiguedad: int = DIAS_MAXIMOS_ANTIGUEDAD,
+) -> List[Dict]:
+    """
+    Busca noticias recientes para un país usando SerpAPI, combinando
+    términos temáticos con el país y su institución rectora (ver
+    construir_query), y aplicando cinco filtros de respaldo en Python:
+    fecha, relevancia temática, exclusión de país cruzado (por texto,
+    por TLD de dominio, y por subdivisiones de riesgo confirmadas).
+
+    Mecanismo de fallback: si la búsqueda inicial (rango_tiempo, por
+    defecto última semana) no devuelve ninguna noticia relevante, se
+    reintenta automáticamente con un rango de 2 semanas (qdr:2w) antes
+    de devolver una lista vacía. Esto evita mostrar "sin resultados"
+    cuando la única causa es que esa semana puntual no tuvo cobertura
+    noticiosa, sin afectar a los países que sí tienen cobertura semanal
+    normal (que nunca llegan a necesitar el reintento).
+
+    Parameters
+    ----------
+    pais : nombre del país (se usa también para etiquetar resultados)
+    api_key : tu API key de SerpAPI
+    terminos : lista de términos temáticos a combinar con OR (por
+                defecto: TERMINOS_TEMATICOS)
+    max_resultados : tope de noticias crudas a traer por país (se filtran
+                      luego a 5 relevantes en el Agente 2)
+    rango_tiempo : filtro temporal inicial enviado a SerpAPI como "tbs".
+                   Valores válidos: "qdr:d" (24h), "qdr:w" (semana, por
+                   defecto), "qdr:m" (mes).
+    dias_maximos_antiguedad : filtro de respaldo aplicado en Python sobre
+                   la fecha real de cada noticia. Si se usa el fallback
+                   a 2 semanas, este límite también se amplía a 14 días
+                   automáticamente para no contradecir el rango ampliado.
+
+    Returns
+    -------
+    Lista de dicts con keys: pais, titulo, fuente, fecha, snippet, link
+    """
+    query = construir_query(pais, terminos)
+
+    resultado = _buscar_una_vez(pais, api_key, query, rango_tiempo, max_resultados, dias_maximos_antiguedad)
+
+    # Si hubo un error de conexión/API, no tiene sentido reintentar.
+    if resultado and "error" in resultado[0]:
+        return resultado
+
+    if len(resultado) == 0 and rango_tiempo == "qdr:w":
+        # Fallback: ampliar a 2 semanas. Formato correcto del parámetro
+        # "tbs" de Google: el número va DESPUÉS de la letra (qdr:w2),
+        # no antes — un error fácil de cometer, verificado contra
+        # documentación de SerpAPI/NetNut. También se amplía el límite
+        # de antigüedad del filtro de Python a 14 días, para ser
+        # consistente con el rango más amplio que se le pide a SerpAPI.
+        resultado = _buscar_una_vez(pais, api_key, query, "qdr:w2", max_resultados, dias_maximos_antiguedad=14)
+
+    return resultado
 
 
 def _extraer_fuente(item: Dict) -> str:
@@ -481,6 +591,93 @@ def _codigo_pais(pais: str) -> str:
         "República Dominicana": "do",
     }
     return mapa.get(pais, "us")
+
+
+# TLDs (dominios de país) de la región que más frecuentemente generan
+# ruido cruzado en estas búsquedas, mapeados a su país real. No es
+# necesario listar los 10 países del proyecto aquí — solo los que
+# históricamente han causado el problema (México, Uruguay, Venezuela,
+# Argentina, Paraguay...). Si en el futuro aparece ruido de otro TLD,
+# agregarlo aquí es la forma más confiable de filtrarlo, mucho más
+# precisa que intentar enumerar nombres de ciudades/estados.
+TLD_A_PAIS = {
+    "mx": "México",
+    "uy": "Uruguay",
+    "ve": "Venezuela",
+    "ar": "Argentina",
+    "py": "Paraguay",
+    "co": "Colombia",
+    "cl": "Chile",
+    "pe": "Perú",
+    "ec": "Ecuador",
+    "bo": "Bolivia",
+    "br": "Brasil",
+}
+
+# Subdivisiones (estados/provincias/departamentos/municipios) de otros
+# países que han causado ruido confirmado en la práctica, para noticias
+# publicadas en dominios genéricos (.com, .org) donde el filtro de TLD
+# no aplica. A diferencia de TLD_A_PAIS, esta lista NO intenta ser
+# exhaustiva — sería una lista casi infinita de nombres de lugares en
+# toda la región. Se agrega un nombre aquí solo cuando se confirma un
+# caso real de ruido en un reporte generado (no de forma preventiva),
+# mapeado al país real al que pertenece esa subdivisión.
+SUBDIVISIONES_DE_RIESGO_CONFIRMADAS = {
+    "veracruz": "México",  # confirmado: coló en reporte de Honduras (24-jun-2026)
+}
+
+
+def _dominio_de_otro_pais(item: Dict, pais_buscado: str) -> bool:
+    """
+    Filtro de exclusión por dominio: True si el link de la noticia
+    tiene un TLD de país (ej. ".uy", ".ve", ".mx") que NO corresponde
+    al país buscado.
+
+    Esto resuelve el caso de instituciones con nombres genéricos que
+    se repiten en varios países (ej. "Secretaría de Desarrollo
+    Social" existe en México, Honduras, y municipios de Venezuela;
+    "MTSS" es tanto Cuba como Uruguay) — el TLD del sitio que publica
+    la noticia es una señal mucho más confiable del país real que el
+    texto del título/snippet, que rara vez menciona el nombre del país
+    cuando ya está implícito para sus lectores locales.
+
+    No descarta nada si el TLD es genérico (.com, .org, etc.) o no
+    está en TLD_A_PAIS — en ese caso, los demás filtros (relevancia,
+    menciona_otro_pais) siguen aplicando.
+    """
+    link = item.get("link", "")
+    if not link:
+        return False
+
+    dominio = urlparse(link).netloc.lower()
+    # Extraer el TLD final (ej. "www.gub.uy" -> "uy", "ladiaria.com.uy" -> "uy")
+    partes = dominio.split(".")
+    if len(partes) < 2:
+        return False
+    tld = partes[-1]
+
+    pais_del_tld = TLD_A_PAIS.get(tld)
+    if pais_del_tld is None:
+        return False  # TLD genérico o no mapeado, no se descarta por esta vía
+
+    return pais_del_tld != pais_buscado
+
+
+def _menciona_subdivision_de_riesgo(item: Dict, pais_buscado: str) -> bool:
+    """
+    Filtro complementario al de TLD: True si el título o snippet
+    menciona una subdivisión (estado/provincia) de otro país que ya
+    se confirmó como fuente de ruido (ver SUBDIVISIONES_DE_RIESGO_CONFIRMADAS),
+    útil para noticias publicadas en dominios genéricos donde el TLD
+    no revela el país real.
+    """
+    texto = f"{item.get('title', '')} {item.get('snippet', '')}".lower()
+    for subdivision, pais_real in SUBDIVISIONES_DE_RIESGO_CONFIRMADAS.items():
+        if pais_real == pais_buscado:
+            continue  # no aplica si la subdivisión es del propio país buscado
+        if re.search(r"\b" + re.escape(subdivision) + r"\b", texto):
+            return True
+    return False
 
 
 def recolectar_todas_las_noticias(
