@@ -75,6 +75,61 @@ PAISES = [
     "República Dominicana",
 ]
 
+# ---------------------------------------------------------------------------
+# DOMINIOS DE MEDIOS DE PRENSA REALES POR PAÍS (ESTRATEGIA HÍBRIDA)
+# ---------------------------------------------------------------------------
+# Investigados manualmente (búsquedas verificadas, 23-24 jun 2026). Se usan
+# con el operador "site:" para restringir la búsqueda SOLO a estos dominios
+# — esto resuelve estructuralmente el problema de noticias de otros países
+# coladas (Uruguay en Cuba, Veracruz en Honduras, etc.), porque un sitio que
+# no está en esta lista no puede aparecer, sin importar qué tan bien
+# escondido esté el nombre del país en el texto. Es la causa raíz que los
+# filtros de texto (demónimos, TLD, subdivisiones) no podían cubrir del
+# todo, al ser listas inherentemente incompletas.
+#
+# MANTENIMIENTO: si un país empieza a mostrar pocos o ningún resultado de
+# forma sostenida, puede ser que falte agregar un medio relevante a su
+# lista — no necesariamente significa que no haya cobertura real.
+SITIOS_PAIS = {
+    "Costa Rica": [
+        "nacion.com", "crhoy.com", "lateja.cr", "diarioextra.com",
+        "semanariouniversidad.com",
+    ],
+    "Cuba": [
+        "cibercuba.com", "14ymedio.com", "diariodecuba.com",
+        "oncubanews.com", "cubanet.org", "periodicocubano.com",
+    ],
+    "El Salvador": [
+        "elsalvador.com", "laprensagrafica.com", "diario.elmundo.sv",
+        "elmundo.sv", "gatoencerrado.news",
+    ],
+    "Guatemala": [
+        "prensalibre.com", "soy502.com", "plazapublica.com.gt",
+        "lahora.gt", "republica.gt",
+    ],
+    "Haití": [
+        "lenouvelliste.com", "haitilibre.com", "ayibopost.com",
+        "loophaiti.com", "alterpresse.org",
+    ],
+    "Honduras": [
+        "laprensa.hn", "latribuna.hn", "tiempo.hn", "elheraldo.hn",
+    ],
+    "México": [
+        "eluniversal.com.mx", "excelsior.com.mx", "milenio.com",
+        "jornada.com.mx", "elfinanciero.com.mx",
+    ],
+    "Nicaragua": [
+        "laprensani.com", "confidencial.digital", "el19digital.com",
+    ],
+    "Panamá": [
+        "prensa.com", "tvn-2.com", "telemetro.com", "panamaamerica.com.pa",
+    ],
+    "República Dominicana": [
+        "diariolibre.com", "listindiario.com", "elnuevodiario.com.do",
+        "elnacional.com.do", "elcaribe.com.do",
+    ],
+}
+
 # Lista ampliada para el filtro de "exclusión de país cruzado"
 # (_menciona_otro_pais). Incluye los 10 países del proyecto MÁS otros
 # países de América Latina y España que frecuentemente aparecen como
@@ -131,6 +186,13 @@ DEMONIMOS_PAIS = {
 # de desarrollo social centralizado; se usan sus dos instituciones más
 # relevantes al tema (Ministerio de Trabajo y Previsión Social, y
 # Ministerio de Desarrollo Local).
+#
+# NOTA: este diccionario ya NO se usa para construir queries (ver
+# construir_query) — se mantiene como referencia documental, y porque
+# las siglas/nombres aquí listados sí se usan en PALABRAS_CLAVE_RELEVANCIA
+# para el filtro de relevancia (_es_relevante_al_tema). Se descartó su
+# uso como ancla de país porque varias instituciones tienen el mismo
+# nombre en más de un país del proyecto (ver docstring de construir_query).
 #
 # MANTENIMIENTO: estos nombres cambian con cada gobierno (ej. Costa Rica
 # cambió de nombre en 2018, México en 2018, Argentina en 2023). Revisar
@@ -289,26 +351,20 @@ TEMA_BASE = TERMINOS_TEMATICOS[0]  # se mantiene por compatibilidad con código 
 DIAS_MAXIMOS_ANTIGUEDAD = 10
 
 
-def construir_query(pais: str, terminos: Optional[List[str]] = None) -> str:
+def construir_query_site(pais: str, terminos: Optional[List[str]] = None) -> str:
     """
-    Construye la query de búsqueda para un país específico, combinando
-    términos temáticos (protección social, seguridad social, CEPAL...)
-    con el nombre del país Y el nombre de su institución rectora de
-    desarrollo/protección social, todo en una sola query con OR (sin
-    multiplicar el consumo de cuota de SerpAPI).
+    Construye la query de búsqueda usando el operador "site:" para
+    restringir los resultados SOLO a los dominios de medios reales de
+    ese país (ver SITIOS_PAIS). Esta es la estrategia PRINCIPAL —
+    elimina estructuralmente el ruido de otros países, ya que un sitio
+    que no está en la lista no puede aparecer, sin depender de
+    detectar nombres de país, demónimos, ciudades o siglas en el texto.
 
-    Incluir la institución ancla la búsqueda al país de forma mucho
-    más específica que el nombre del país solo, porque esas
-    instituciones casi nunca se mencionan en noticias de otro país.
+    Para Haití se agregan también los términos temáticos en francés.
 
-    Para Haití (único país francófono de los 10), se agregan también
-    los términos temáticos en francés (TERMINOS_TEMATICOS_FRANCES),
-    para no perder la cobertura de prensa local haitiana real, que en
-    su mayoría publica en francés o criollo haitiano.
-
-    Ejemplo de query resultante para Panamá:
+    Ejemplo de query resultante para Honduras:
     ("programas de protección social" OR "seguridad social" OR ...)
-    ("Panamá" OR "Ministerio de Desarrollo Social" OR "MIDES" OR "CSS")
+    (site:laprensa.hn OR site:latribuna.hn OR site:tiempo.hn OR site:elheraldo.hn)
     """
     terminos = terminos or TERMINOS_TEMATICOS
     if pais == "Haití":
@@ -316,11 +372,64 @@ def construir_query(pais: str, terminos: Optional[List[str]] = None) -> str:
 
     terminos_con_or = " OR ".join(f'"{t}"' for t in terminos)
 
-    instituciones = INSTITUCIONES_PAIS.get(pais, [])
-    anclas_pais = [pais] + instituciones
-    anclas_con_or = " OR ".join(f'"{a}"' for a in anclas_pais)
+    sitios = SITIOS_PAIS.get(pais, [])
+    sitios_con_or = " OR ".join(f"site:{s}" for s in sitios)
 
-    return f'({terminos_con_or}) ({anclas_con_or})'
+    return f'({terminos_con_or}) ({sitios_con_or})'
+
+
+def construir_query(pais: str, terminos: Optional[List[str]] = None) -> str:
+    """
+    Construye la query de búsqueda usando anclas de texto (nombre del
+    país + demónimo), SIN restricción de dominio.
+
+    Esta es la estrategia de RESPALDO — se usa solo si construir_query_site
+    no trae ningún resultado relevante para ese país (ver
+    buscar_noticias_pais), como red de seguridad ante el caso de que la
+    lista de SITIOS_PAIS no cubra algún medio relevante todavía no
+    identificado.
+
+    IMPORTANTE: ya NO se incluyen las instituciones (INSTITUCIONES_PAIS)
+    como ancla en esta query. Antes se usaban con OR junto al nombre
+    del país, pero varias instituciones tienen el MISMO nombre en más
+    de un país del proyecto (ej. "Ministerio de Desarrollo Social"
+    existe tanto en Guatemala como en Panamá; "MTSS" en Cuba y
+    Uruguay). Si la institución sola bastaba para el match, una
+    noticia de un país podía colarse en el reporte de otro sin que
+    ningún filtro de exclusión lo detectara (el filtro
+    _menciona_otro_pais no ayuda cuando ambos países pertenecen al
+    proyecto). Por eso ahora SOLO se usa el nombre del país y sus
+    demónimos — más estricto, pero sin ese riesgo estructural.
+
+    Para Haití (único país francófono de los 10), se agregan también
+    los términos temáticos en francés y la grafía "Haïti".
+
+    Ejemplo de query resultante para Panamá:
+    ("programas de protección social" OR "seguridad social" OR ...)
+    ("Panamá" OR "panameño" OR "panameña" OR "panameños" OR "panameñas")
+    """
+    terminos = terminos or TERMINOS_TEMATICOS
+    if pais == "Haití":
+        terminos = list(terminos) + TERMINOS_TEMATICOS_FRANCES
+
+    terminos_con_or = " OR ".join(f'"{t}"' for t in terminos)
+
+    pais_y_demonimos = [pais] + DEMONIMOS_PAIS.get(pais, [])
+    if pais == "Haití":
+        # "Haïti" (con ï francesa) es una cadena Unicode DISTINTA de
+        # "Haití" (con í española) — sin esta variante, ninguna noticia
+        # escrita en francés que use la grafía francesa del país hace
+        # match con la query.
+        pais_y_demonimos += ["Haïti"]
+
+    anclas_pais_con_or = " OR ".join(f'"{a}"' for a in pais_y_demonimos)
+
+    # El nombre del país/demónimo es SIEMPRE obligatorio (cláusula AND
+    # independiente). Las instituciones NO se usan en construir_query
+    # como ancla alternativa al país, precisamente porque varias se
+    # repiten entre países del proyecto (ver docstring) — combinarlas
+    # con OR permitiría que la institución sola bastara para el match.
+    return f'({terminos_con_or}) ({anclas_pais_con_or})'
 
 
 def _es_relevante_al_tema(item: Dict, palabras_clave: Optional[List[str]] = None) -> bool:
@@ -450,16 +559,27 @@ def _buscar_una_vez(
     rango_tiempo: str,
     max_resultados: int,
     dias_maximos_antiguedad: int,
-) -> List[Dict]:
+) -> Dict:
     """
-    Ejecuta una sola consulta a SerpAPI con un rango de tiempo dado, y
-    aplica los 5 filtros de respaldo en Python (fecha, relevancia,
-    país cruzado por texto, dominio, subdivisiones de riesgo).
+    Ejecuta una sola consulta a SerpAPI con un rango de tiempo dado.
 
-    Función auxiliar de buscar_noticias_pais — no se usa directamente
-    desde fuera del módulo. Existe separada para permitir el mecanismo
-    de fallback: reintentar con un rango más amplio si la primera
-    búsqueda no trae resultados relevantes (ver buscar_noticias_pais).
+    El filtro de FECHA se aplica de forma estricta (sin ambigüedad: una
+    noticia más vieja que el límite nunca se acepta). Los otros 4
+    filtros (relevancia temática, país cruzado por texto, TLD de
+    dominio, subdivisiones de riesgo) se usan para CLASIFICAR cada
+    noticia en "aceptada" o "descartada_marginal", en vez de eliminarla
+    de inmediato — así, si después hacen falta más noticias de las que
+    sobrevivieron, el agente verificador de Groq (ver summarizer.py)
+    puede revisar las descartadas marginales y rescatar las que
+    realmente sean relevantes, en vez de perderlas para siempre por un
+    filtro de texto que no es 100% exhaustivo.
+
+    Returns
+    -------
+    {"aceptadas": [...], "descartadas_marginales": [...], "error": str|None}
+    Cada noticia en ambas listas tiene las keys: pais, titulo, fuente,
+    fecha, snippet, link. "error" es None salvo que haya fallado la
+    petición HTTP o la API haya devuelto un error.
     """
     idioma_busqueda = "fr" if pais == "Haití" else "es"
 
@@ -478,31 +598,47 @@ def _buscar_una_vez(
         resp.raise_for_status()
         data = resp.json()
     except requests.exceptions.RequestException as e:
-        return [{"pais": pais, "error": f"Error de conexión con SerpAPI: {e}"}]
+        return {"aceptadas": [], "descartadas_marginales": [], "error": f"Error de conexión con SerpAPI: {e}"}
 
     if "error" in data:
-        return [{"pais": pais, "error": data["error"]}]
+        return {"aceptadas": [], "descartadas_marginales": [], "error": data["error"]}
 
     noticias_crudas = data.get("news_results", [])
 
+    # Filtro de fecha: estricto, sin clasificar — una noticia vieja
+    # jamás debe llegar ni siquiera a la lista de descartadas marginales
+    # (no tiene sentido que el LLM "rescate" algo de hace años).
     noticias_crudas = [item for item in noticias_crudas if _dentro_del_rango(item, dias_maximos_antiguedad)]
-    noticias_crudas = [item for item in noticias_crudas if _es_relevante_al_tema(item)]
-    noticias_crudas = [item for item in noticias_crudas if not _menciona_otro_pais(item, pais)]
-    noticias_crudas = [item for item in noticias_crudas if not _dominio_de_otro_pais(item, pais)]
-    noticias_crudas = [item for item in noticias_crudas if not _menciona_subdivision_de_riesgo(item, pais)]
 
-    noticias = []
-    for item in noticias_crudas[:max_resultados]:
-        noticias.append({
+    def _convertir(item: Dict) -> Dict:
+        return {
             "pais": pais,
             "titulo": item.get("title", "Sin título"),
             "fuente": _extraer_fuente(item),
             "fecha": item.get("date", "Fecha no disponible"),
             "snippet": item.get("snippet", ""),
             "link": item.get("link", ""),
-        })
+        }
 
-    return noticias
+    aceptadas = []
+    descartadas_marginales = []
+    for item in noticias_crudas:
+        es_marginal = (
+            not _es_relevante_al_tema(item)
+            or _menciona_otro_pais(item, pais)
+            or _dominio_de_otro_pais(item, pais)
+            or _menciona_subdivision_de_riesgo(item, pais)
+        )
+        if es_marginal:
+            descartadas_marginales.append(_convertir(item))
+        else:
+            aceptadas.append(_convertir(item))
+
+    return {
+        "aceptadas": aceptadas[:max_resultados],
+        "descartadas_marginales": descartadas_marginales[:max_resultados],
+        "error": None,
+    }
 
 
 def buscar_noticias_pais(
@@ -512,21 +648,31 @@ def buscar_noticias_pais(
     max_resultados: int = 10,
     rango_tiempo: str = "qdr:w",  # qdr:w = última semana (filtro de SerpAPI)
     dias_maximos_antiguedad: int = DIAS_MAXIMOS_ANTIGUEDAD,
-) -> List[Dict]:
+    n_noticias_necesarias: int = 5,
+) -> Dict:
     """
-    Busca noticias recientes para un país usando SerpAPI, combinando
-    términos temáticos con el país y su institución rectora (ver
-    construir_query), y aplicando cinco filtros de respaldo en Python:
-    fecha, relevancia temática, exclusión de país cruzado (por texto,
-    por TLD de dominio, y por subdivisiones de riesgo confirmadas).
+    Busca noticias recientes para un país usando SerpAPI, con una
+    estrategia en capas:
 
-    Mecanismo de fallback: si la búsqueda inicial (rango_tiempo, por
-    defecto última semana) no devuelve ninguna noticia relevante, se
-    reintenta automáticamente con un rango de 2 semanas (qdr:2w) antes
-    de devolver una lista vacía. Esto evita mostrar "sin resultados"
-    cuando la única causa es que esa semana puntual no tuvo cobertura
-    noticiosa, sin afectar a los países que sí tienen cobertura semanal
-    normal (que nunca llegan a necesitar el reintento).
+    1. PRINCIPAL — query con "site:" restringido a medios reales del
+       país (ver SITIOS_PAIS / construir_query_site). Elimina
+       estructuralmente el ruido de otros países: un sitio que no está
+       en la lista no puede aparecer, sin depender de detectar texto.
+    2. RESPALDO/COMPLEMENTO — si la capa 1 no llega a n_noticias_necesarias
+       (ej. la lista de sitios no cubre algún medio relevante todavía
+       no identificado, o simplemente hubo poca cobertura), se
+       consulta también la query de anclas de texto (nombre del país
+       + demónimo), sin restricción de dominio, y se combinan los
+       resultados de ambas capas (sin duplicar por link).
+    3. FALLBACK DE FECHA — en cualquiera de las dos capas, si el rango
+       de 1 semana no trae nada, se reintenta con 2 semanas.
+
+    El filtro de fecha es estricto (una noticia vieja nunca se acepta).
+    Los demás filtros (relevancia, país cruzado, TLD, subdivisiones)
+    clasifican cada noticia en "aceptada" o "descartada_marginal" en
+    vez de eliminarla — las descartadas marginales quedan disponibles
+    para que el agente verificador de Groq (summarizer.py) las revise
+    si después de todo no hay suficientes noticias aceptadas.
 
     Parameters
     ----------
@@ -534,38 +680,84 @@ def buscar_noticias_pais(
     api_key : tu API key de SerpAPI
     terminos : lista de términos temáticos a combinar con OR (por
                 defecto: TERMINOS_TEMATICOS)
-    max_resultados : tope de noticias crudas a traer por país (se filtran
-                      luego a 5 relevantes en el Agente 2)
+    max_resultados : tope de noticias crudas a traer por consulta a
+                      SerpAPI (no es el cupo final — ver
+                      n_noticias_necesarias para eso)
     rango_tiempo : filtro temporal inicial enviado a SerpAPI como "tbs".
                    Valores válidos: "qdr:d" (24h), "qdr:w" (semana, por
                    defecto), "qdr:m" (mes).
     dias_maximos_antiguedad : filtro de respaldo aplicado en Python sobre
                    la fecha real de cada noticia. Si se usa el fallback
-                   a 2 semanas, este límite también se amplía a 14 días
-                   automáticamente para no contradecir el rango ampliado.
+                   a 2 semanas, este límite también se amplía a 14 días.
+    n_noticias_necesarias : cupo real de noticias que se necesitan para
+                   este país (debe coincidir con n_noticias usado en
+                   summarizer.procesar_pais). Se usa para decidir si
+                   hace falta consultar la capa 2 — si la capa 1 ya
+                   alcanzó este cupo, no se gasta cuota adicional.
 
     Returns
     -------
-    Lista de dicts con keys: pais, titulo, fuente, fecha, snippet, link
+    {"aceptadas": [...], "descartadas_marginales": [...], "error": str|None}
     """
-    query = construir_query(pais, terminos)
 
-    resultado = _buscar_una_vez(pais, api_key, query, rango_tiempo, max_resultados, dias_maximos_antiguedad)
-
-    # Si hubo un error de conexión/API, no tiene sentido reintentar.
-    if resultado and "error" in resultado[0]:
+    def _buscar_con_fallback_fecha(query: str) -> Dict:
+        """Aplica el fallback de 1 semana -> 2 semanas para una query dada."""
+        resultado = _buscar_una_vez(pais, api_key, query, rango_tiempo, max_resultados, dias_maximos_antiguedad)
+        if resultado["error"] is not None:
+            return resultado
+        if len(resultado["aceptadas"]) == 0 and rango_tiempo == "qdr:w":
+            resultado_2sem = _buscar_una_vez(pais, api_key, query, "qdr:w2", max_resultados, dias_maximos_antiguedad=14)
+            if resultado_2sem["error"] is not None:
+                return resultado_2sem
+            # Combinar descartadas marginales de ambos intentos, por si
+            # el verificador LLM necesita más candidatas para revisar.
+            resultado_2sem["descartadas_marginales"] = (
+                resultado["descartadas_marginales"] + resultado_2sem["descartadas_marginales"]
+            )
+            return resultado_2sem
         return resultado
 
-    if len(resultado) == 0 and rango_tiempo == "qdr:w":
-        # Fallback: ampliar a 2 semanas. Formato correcto del parámetro
-        # "tbs" de Google: el número va DESPUÉS de la letra (qdr:w2),
-        # no antes — un error fácil de cometer, verificado contra
-        # documentación de SerpAPI/NetNut. También se amplía el límite
-        # de antigüedad del filtro de Python a 14 días, para ser
-        # consistente con el rango más amplio que se le pide a SerpAPI.
-        resultado = _buscar_una_vez(pais, api_key, query, "qdr:w2", max_resultados, dias_maximos_antiguedad=14)
+    # Capa 1: query con site: (estrategia principal)
+    query_site = construir_query_site(pais, terminos)
+    resultado = _buscar_con_fallback_fecha(query_site)
 
-    return resultado
+    if resultado["error"] is not None:
+        return resultado  # error de conexión/API, no tiene sentido reintentar con otra query
+
+    if len(resultado["aceptadas"]) >= n_noticias_necesarias:
+        return resultado
+
+    # Capa 2: respaldo con anclas de texto, sin restricción de dominio.
+    # Se consulta SIEMPRE que la capa 1 no haya llegado al cupo
+    # solicitado (max_resultados) — no solo cuando la capa 1 quedó en
+    # cero — para poder COMPLEMENTAR (no solo reemplazar) lo que site:
+    # ya encontró. Se combinan tanto las aceptadas como las descartadas
+    # marginales de ambas capas, para maximizar las candidatas
+    # disponibles para el verificador LLM si después de todo hace falta.
+    query_anclas = construir_query(pais, terminos)
+    resultado_anclas = _buscar_con_fallback_fecha(query_anclas)
+
+    if resultado_anclas["error"] is not None:
+        # La capa 2 falló por error de conexión/API — se devuelve lo que
+        # sí se obtuvo de la capa 1 en vez de perderlo todo.
+        return resultado
+
+    # Combinar aceptadas de ambas capas, evitando duplicados por link
+    # (es posible que el mismo artículo aparezca en ambas búsquedas).
+    links_ya_vistos = {n["link"] for n in resultado["aceptadas"]}
+    aceptadas_combinadas = list(resultado["aceptadas"])
+    for noticia in resultado_anclas["aceptadas"]:
+        if noticia["link"] not in links_ya_vistos:
+            aceptadas_combinadas.append(noticia)
+            links_ya_vistos.add(noticia["link"])
+
+    descartadas_combinadas = resultado["descartadas_marginales"] + resultado_anclas["descartadas_marginales"]
+
+    return {
+        "aceptadas": aceptadas_combinadas[:max_resultados],
+        "descartadas_marginales": descartadas_combinadas[:max_resultados],
+        "error": None,
+    }
 
 
 def _extraer_fuente(item: Dict) -> str:
@@ -694,7 +886,9 @@ def recolectar_todas_las_noticias(
 
     Returns
     -------
-    Dict {pais: [lista de noticias]}
+    Dict {pais: resultado_busqueda}, donde resultado_busqueda es el
+    dict {"aceptadas", "descartadas_marginales", "error"} devuelto por
+    buscar_noticias_pais.
     """
     paises = paises or PAISES
     resultados = {}

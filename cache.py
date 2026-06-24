@@ -9,7 +9,8 @@ hoy. También habilita la regeneración "país por país" sin perder los
 resultados ya cacheados de los otros países.
 
 Almacena, por (pais, fecha):
-  - noticias_crudas   -> salida cruda del Agente 1 (lista de dicts)
+  - noticias_crudas   -> salida cruda del Agente 1: dict con keys
+                          "aceptadas", "descartadas_marginales", "error"
   - reporte_procesado -> salida ya resumida del Agente 2 (dict)
   - actualizado_en    -> timestamp de la última escritura
 
@@ -25,8 +26,21 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 DB_PATH = Path(__file__).parent / "cache_noticias.db"
+
+# Zona horaria de referencia para todo el proyecto. Sin esto, el
+# servidor de Streamlit Cloud usa UTC, lo que puede hacer que la
+# fecha del reporte aparezca "un día adelante" respecto a la hora
+# local del usuario (ej. consultar a las 11pm en México = ya es el
+# día siguiente en UTC).
+ZONA_HORARIA = ZoneInfo("America/Mexico_City")
+
+
+def _ahora() -> datetime:
+    """Hora actual en la zona horaria de referencia del proyecto."""
+    return datetime.now(ZONA_HORARIA)
 
 
 def _conectar() -> sqlite3.Connection:
@@ -52,8 +66,8 @@ def inicializar_db():
 
 
 def _fecha_hoy() -> str:
-    """Fecha del día en formato YYYY-MM-DD, usada como parte de la clave."""
-    return datetime.now().strftime("%Y-%m-%d")
+    """Fecha del día en formato YYYY-MM-DD (zona horaria del proyecto), usada como parte de la clave."""
+    return _ahora().strftime("%Y-%m-%d")
 
 
 def obtener_cache_pais(pais: str, fecha: Optional[str] = None) -> Optional[Dict]:
@@ -84,13 +98,13 @@ def obtener_cache_pais(pais: str, fecha: Optional[str] = None) -> Optional[Dict]
 
 def guardar_cache_pais(
     pais: str,
-    noticias_crudas: List[Dict],
+    noticias_crudas: Dict,
     reporte_procesado: Dict,
     fecha: Optional[str] = None,
 ):
     """Inserta o actualiza (upsert) el caché de un país para el día de hoy."""
     fecha = fecha or _fecha_hoy()
-    ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ahora = _ahora().strftime("%Y-%m-%d %H:%M:%S")
 
     with _conectar() as conn:
         conn.execute("""
@@ -122,7 +136,7 @@ def limpiar_cache_antiguo(dias_a_conservar: int = 3):
     de la app), no es crítico que corra siempre.
     """
     from datetime import timedelta
-    fecha_limite = (datetime.now() - timedelta(days=dias_a_conservar)).strftime("%Y-%m-%d")
+    fecha_limite = (_ahora() - timedelta(days=dias_a_conservar)).strftime("%Y-%m-%d")
     with _conectar() as conn:
         conn.execute("DELETE FROM cache_pais_dia WHERE fecha < ?", (fecha_limite,))
         conn.commit()

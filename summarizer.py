@@ -1,15 +1,18 @@
 """
 AGENTE 2 — Sintetizador y generador de reporte (summarizer.py)
 ================================================================
-Responsabilidad única: recibir las noticias crudas del Agente 1,
-seleccionar las 3 más relevantes por país, generar un resumen breve
-de cada una usando Groq (Llama 3.3 70B), y producir un documento
-Word (.docx) con el reporte final.
+Responsabilidad única: recibir las noticias crudas del Agente 1
+(separadas en "aceptadas" y "descartadas_marginales"), completar el
+cupo de noticias por país (usando un agente verificador con Groq
+sobre las descartadas marginales si hace falta), generar un resumen
+breve de cada una usando Groq (Llama 3.3 70B), y producir un
+documento Word (.docx) con el reporte final.
 """
 
 import io
 import time
 from datetime import datetime
+from cache import ZONA_HORARIA
 from typing import List, Dict
 
 import groq
@@ -55,6 +58,62 @@ def _es_meta_explicacion(texto: str) -> bool:
     puede resumir, en vez de un resumen real."""
     texto_normalizado = texto.lower()
     return any(patron in texto_normalizado for patron in _PATRONES_META_EXPLICACION)
+
+
+def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key: str) -> bool:
+    """
+    Agente verificador (Capa 3 de la estrategia híbrida) — usa Groq
+    para confirmar si una noticia candidata es genuinamente relevante
+    al tema en el país buscado, atrapando casos ambiguos que ningún
+    filtro de texto (palabras clave, TLD, demónimos) puede anticipar
+    de forma exhaustiva.
+
+    Diseñado para usarse SOLO cuando, tras la búsqueda con site: y los
+    filtros de texto, quedan menos candidatas que las necesarias — no
+    se llama para cada noticia de cada país, para mantener bajo el
+    consumo de cuota de Groq (ver _completar_con_verificacion_llm).
+
+    En caso de cualquier error de Groq (rate limit, conexión, etc.),
+    se asume que la noticia SÍ es relevante (fail-open) — es preferible
+    mostrar una noticia potencialmente dudosa que perder cobertura
+    real por un fallo transitorio del verificador.
+
+    Returns
+    -------
+    True si Groq confirma relevancia (o si hubo un error y se aplicó
+    el fail-open), False si Groq determina que no es relevante.
+    """
+    cliente = Groq(api_key=groq_api_key)
+
+    prompt = (
+        f"Eres un verificador estricto de relevancia temática para {pais}.\n\n"
+        f"Título: {titulo}\n"
+        f"Extracto: {snippet}\n\n"
+        f"Pregunta: ¿Esta noticia trata genuinamente sobre programas de "
+        f"protección social, seguridad social, asistencia social, o "
+        f"políticas de desarrollo social EN {pais} específicamente "
+        f"(no en otro país, y no un tema no relacionado como deportes, "
+        f"farándula, o política general sin relación con estos programas)?\n\n"
+        f"Responde ÚNICAMENTE con una palabra: SI o NO."
+    )
+
+    try:
+        respuesta = cliente.chat.completions.create(
+            model=MODELO_GROQ,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_completion_tokens=10,
+        )
+        texto = (respuesta.choices[0].message.content or "").strip().upper()
+        # Coincidencia estricta: solo cuenta como "relevante" si la
+        # primera palabra de la respuesta ES "SI"/"SÍ" (ignorando
+        # puntuación final como "SI." o "SÍ,") — no basta con que la
+        # respuesta comience con la letra "S" (ej. "Sin información
+        # suficiente" empieza con S pero significa lo contrario).
+        primera_palabra = texto.split()[0].strip(".,;:!¡¿?") if texto.split() else ""
+        return primera_palabra in ("SI", "SÍ")
+    except Exception:
+        return True  # fail-open: ante error del verificador, no se descarta
 
 
 def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> Dict:
@@ -166,21 +225,72 @@ def seleccionar_top_n(noticias: List[Dict], n: int = 3) -> List[Dict]:
     return validas[:n]
 
 
+def _completar_con_verificacion_llm(
+    aceptadas: List[Dict],
+    descartadas_marginales: List[Dict],
+    n_necesarias: int,
+    pais: str,
+    groq_api_key: str,
+) -> List[Dict]:
+    """
+    Agente verificador orquestador (Capa 3 de la estrategia híbrida):
+    si "aceptadas" ya tiene al menos n_necesarias, las devuelve tal
+    cual, SIN tocar Groq (sin costo extra — caso común, cobertura
+    normal). Si faltan, recorre "descartadas_marginales" (las que los
+    filtros de texto de scraper.py ya habían descartado) y las pasa
+    una por una por verificar_relevancia_llm, añadiendo las que se
+    confirmen relevantes hasta completar n_necesarias o agotar las
+    candidatas disponibles.
+
+    Esto mantiene el costo de Groq bajo en el caso común y solo lo
+    activa cuando realmente hace falta completar el cupo de noticias.
+    """
+    if len(aceptadas) >= n_necesarias:
+        return aceptadas[:n_necesarias]
+
+    resultado = list(aceptadas)
+    for i, candidata in enumerate(descartadas_marginales):
+        if len(resultado) >= n_necesarias:
+            break
+        if i > 0:
+            time.sleep(ESPERA_ENTRE_LLAMADAS_SEGUNDOS)
+        es_relevante = verificar_relevancia_llm(
+            titulo=candidata["titulo"],
+            snippet=candidata.get("snippet", ""),
+            pais=pais,
+            groq_api_key=groq_api_key,
+        )
+        if es_relevante:
+            resultado.append(candidata)
+
+    return resultado
+
+
 def procesar_pais(
     pais: str,
-    noticias_crudas: List[Dict],
+    resultado_busqueda: Dict,
     groq_api_key: str,
     n_noticias: int = 5,
 ) -> Dict:
     """
-    Para un país: selecciona top-N noticias y genera resumen de cada una.
+    Para un país: completa el cupo de noticias (usando el agente
+    verificador de Groq si hace falta) y genera resumen de cada una.
+
+    Parameters
+    ----------
+    resultado_busqueda : el dict devuelto por scraper.buscar_noticias_pais,
+                con keys "aceptadas", "descartadas_marginales", "error".
 
     Returns
     -------
     {"pais": str, "noticias": [{"titulo", "fuente", "fecha", "link", "resumen"}],
      "sin_resultados": bool, "errores_llm": [str, ...]}
     """
-    top = seleccionar_top_n(noticias_crudas, n_noticias)
+    aceptadas = seleccionar_top_n(resultado_busqueda.get("aceptadas", []), n_noticias)
+    descartadas = resultado_busqueda.get("descartadas_marginales", [])
+
+    necesito_verificador = len(aceptadas) < n_noticias
+    top = _completar_con_verificacion_llm(aceptadas, descartadas, n_noticias, pais, groq_api_key)
 
     if not top:
         return {"pais": pais, "noticias": [], "sin_resultados": True, "errores_llm": []}
@@ -188,10 +298,12 @@ def procesar_pais(
     procesadas = []
     errores_llm = []
     for i, noticia in enumerate(top):
-        if i > 0:
+        if i > 0 or necesito_verificador:
             # Pequeña pausa entre llamadas consecutivas para repartir el
-            # volumen dentro del límite de 30 solicitudes/minuto de Groq
-            # (con 10 países x 5 noticias = 50 llamadas por ejecución).
+            # volumen dentro del límite de 30 solicitudes/minuto de Groq.
+            # Se aplica también antes de la primera llamada de este bucle
+            # si el verificador ya hizo llamadas justo antes (evita una
+            # ráfaga en la transición verificador -> resúmenes).
             time.sleep(ESPERA_ENTRE_LLAMADAS_SEGUNDOS)
 
         resultado = resumir_noticia(
@@ -215,7 +327,7 @@ def procesar_pais(
 
 
 def procesar_todos_los_paises(
-    noticias_por_pais: Dict[str, List[Dict]],
+    noticias_por_pais: Dict[str, Dict],
     groq_api_key: str,
     n_noticias: int = 3,
     progress_callback=None,
@@ -295,10 +407,17 @@ def _agregar_pais(doc: Document, datos_pais: Dict):
 
     if datos_pais["sin_resultados"]:
         p = doc.add_paragraph()
-        run_vacio = p.add_run(
-            "No se encontraron noticias relevantes sobre programas de "
-            "protección social en la última semana para este país."
-        )
+        if datos_pais.get("error_busqueda"):
+            texto_vacio = (
+                f"No se pudo consultar este país por un error técnico: "
+                f"{datos_pais['error_busqueda']}"
+            )
+        else:
+            texto_vacio = (
+                "No se encontraron noticias relevantes sobre programas de "
+                "protección social en la última semana para este país."
+            )
+        run_vacio = p.add_run(texto_vacio)
         run_vacio.font.italic = True
         run_vacio.font.color.rgb = COLOR_GRIS
         doc.add_paragraph()
@@ -355,10 +474,13 @@ def generar_documento_word(reportes_por_pais: List[Dict]) -> io.BytesIO:
         1: "enero", 2: "febrero", 3: "marzo", 4: "abril", 5: "mayo", 6: "junio",
         7: "julio", 8: "agosto", 9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre",
     }
-    ahora = datetime.now()
+    ahora = datetime.now(ZONA_HORARIA)
     fecha_str = f"{ahora.day} de {MESES_ES[ahora.month]} de {ahora.year}, {ahora.strftime('%H:%M')}"
 
-    if len(reportes_por_pais) == 1:
+    if len(reportes_por_pais) == 0:
+        titulo_texto = "Resumen de Noticias\nProgramas de Protección Social"
+        nota_texto = "No hay países disponibles para este reporte."
+    elif len(reportes_por_pais) == 1:
         pais_unico = reportes_por_pais[0]["pais"]
         titulo_texto = f"Resumen de Noticias\nProgramas de Protección Social en {pais_unico}"
         nota_texto = f"Reporte individual del país: {pais_unico}."

@@ -8,7 +8,7 @@ Caribe (ReDeSoc), https://dds.cepal.org/redesoc/ministerios
 |---|---|---|---|
 | Costa Rica | Ministerio de Desarrollo Humano e Inclusión Social (MDHIS) / Instituto Mixto de Ayuda Social (IMAS) | 2018 | El MDHIS es la cartera política; el IMAS es la institución ejecutora de programas. Ambos se incluyen en la búsqueda. |
 | Cuba | Ministerio de Trabajo y Seguridad Social (MTSS) | 1994 | No existe un "ministerio de desarrollo social" separado; la seguridad social está integrada al ministerio de trabajo. |
-| El Salvador | Ministerio de Trabajo y Previsión Social (MTPS) / Ministerio de Desarrollo Local (MINDEL) | — | El Salvador no tiene un ministerio de desarrollo social centralizado (no aparece en la tabla de CEPAL). Se usan las dos instituciones más relevantes al tema. |
+| El Salvador | Ministerio de Trabajo y Previsión Social (MTPS) / Ministerio de Desarrollo Local (MINDEL) / FISDL (histórico) / Instituto Salvadoreño del Seguro Social (ISSS) / Superintendencia del Sistema Financiero (SSF) / Ministerio de Hacienda / DIGESTYC | — | El Salvador no tiene un ministerio de desarrollo social centralizado. El FISDL (antiguo ejecutor de transferencias monetarias) cerró en 2021-2022 y sus funciones pasaron a MINDEL, pero la prensa sigue usando el nombre histórico. ISSS y SSF gestionan seguridad social y pensiones reales; Hacienda y DIGESTYC aportan cobertura de gasto social y estadísticas de pobreza. |
 | Guatemala | Ministerio de Desarrollo Social (MIDES) | 2012 | — |
 | Haití | Ministerio de Asuntos Sociales y Trabajo (MAST) | 1983 | — |
 | Honduras | Secretaría de Desarrollo Social | 2022 | El nombre exacto puede variar entre "Secretaría" y "Ministerio" según la fuente; verificar con el sitio oficial vigente. |

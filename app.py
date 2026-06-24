@@ -22,8 +22,9 @@ Para desplegar en Streamlit Cloud:
 import streamlit as st
 import unicodedata
 from datetime import datetime
+from cache import _ahora
 
-from scraper import buscar_noticias_pais, PAISES, TEMA_BASE
+from scraper import buscar_noticias_pais, PAISES, TERMINOS_TEMATICOS
 from summarizer import procesar_pais, generar_documento_word
 import cache
 
@@ -41,7 +42,7 @@ def _normalizar_nombre_archivo(texto: str) -> str:
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Noticias: Protección Social en México, Centroamérica y el Caribe",
+    page_title="Noticias: Protección Social en Centroamérica y el Caribe",
     page_icon="📰",
     layout="wide",
 )
@@ -58,7 +59,7 @@ if "reportes" not in st.session_state:
     st.session_state.reportes = {}
 
 st.title("📰 Resumen Diario de Noticias")
-st.subheader("Programas de Protección Social en México, Centroamérica y el Caribe")
+st.subheader("Programas de Protección Social en Centroamérica y el Caribe")
 
 st.markdown(
     "Esta aplicación combina dos agentes automatizados:\n"
@@ -102,7 +103,7 @@ with st.sidebar:
     st.divider()
     st.caption(f"Países cubiertos ({len(PAISES)}):")
     st.caption(", ".join(PAISES))
-    st.caption(f"Tema de búsqueda: *{TEMA_BASE}*")
+    st.caption(f"Términos de búsqueda: *{', '.join(TERMINOS_TEMATICOS)}*")
 
 claves_listas = bool(serpapi_key) and bool(groq_key)
 
@@ -128,11 +129,24 @@ def procesar_un_pais(pais: str, forzar: bool = False) -> dict:
             return {**cacheado["reporte_procesado"], "_desde_cache": True,
                      "_actualizado_en": cacheado["actualizado_en"]}
 
-    noticias_crudas = buscar_noticias_pais(pais, serpapi_key)
-    reporte = procesar_pais(pais, noticias_crudas, groq_key, n_noticias)
-    cache.guardar_cache_pais(pais, noticias_crudas, reporte)
+    resultado_busqueda = buscar_noticias_pais(pais, serpapi_key, n_noticias_necesarias=n_noticias)
 
-    return {**reporte, "_desde_cache": False, "_actualizado_en": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    if resultado_busqueda.get("error"):
+        # Error de conexión/API de SerpAPI — se muestra explícitamente
+        # en vez de tratarlo en silencio como "sin resultados".
+        reporte = {
+            "pais": pais,
+            "noticias": [],
+            "sin_resultados": True,
+            "errores_llm": [],
+            "error_busqueda": resultado_busqueda["error"],
+        }
+    else:
+        reporte = procesar_pais(pais, resultado_busqueda, groq_key, n_noticias)
+
+    cache.guardar_cache_pais(pais, resultado_busqueda, reporte)
+
+    return {**reporte, "_desde_cache": False, "_actualizado_en": _ahora().strftime("%Y-%m-%d %H:%M:%S")}
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +218,10 @@ if st.session_state.reportes:
                 else:
                     st.caption(f"🆕 Recién generado — {reporte['_actualizado_en']}")
 
-            if reporte["sin_resultados"]:
-                st.info("No se encontraron noticias relevantes en la última semana.")
+            if reporte.get("error_busqueda"):
+                st.error(f"⚠️ Error al consultar SerpAPI para este país: {reporte['error_busqueda']}")
+            elif reporte["sin_resultados"]:
+                st.info("No se encontraron noticias relevantes en la última semana (ni en las últimas 2 semanas).")
             else:
                 for i, noticia in enumerate(reporte["noticias"], start=1):
                     st.markdown(f"**{i}. {noticia['titulo']}**")
@@ -248,18 +264,22 @@ if st.session_state.reportes:
             "pais": r["pais"],
             "sin_resultados": r["sin_resultados"],
             "noticias": r["noticias"],
+            "error_busqueda": r.get("error_busqueda"),
         })
 
-    docx_buffer = generar_documento_word(reportes_para_docx)
-    fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+    fecha_hoy = _ahora().strftime("%Y-%m-%d")
 
-    st.download_button(
-        label=f"⬇️ Descargar documento Word ({len(paises_listos)}/{len(PAISES)} países)",
-        data=docx_buffer,
-        file_name=f"reporte_proteccion_social_{fecha_hoy}.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        type="primary",
-    )
+    if reportes_para_docx:
+        docx_buffer = generar_documento_word(reportes_para_docx)
+        st.download_button(
+            label=f"⬇️ Descargar documento Word ({len(paises_listos)}/{len(PAISES)} países)",
+            data=docx_buffer,
+            file_name=f"reporte_proteccion_social_{fecha_hoy}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            type="primary",
+        )
+    else:
+        st.info("Aún no hay ningún país listo para descargar. Usa el botón principal para empezar.")
 
     # -----------------------------------------------------------------
     # DESCARGA DE UN SOLO PAÍS (documento Word con solo sus 5 noticias)
@@ -282,6 +302,7 @@ if st.session_state.reportes:
             "pais": reporte_pais_elegido["pais"],
             "sin_resultados": reporte_pais_elegido["sin_resultados"],
             "noticias": reporte_pais_elegido["noticias"],
+            "error_busqueda": reporte_pais_elegido.get("error_busqueda"),
         }])
 
         nombre_archivo_pais = (

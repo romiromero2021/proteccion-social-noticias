@@ -115,15 +115,36 @@ pestaña de país en vez de "🆕 Recién generado".
   se benefician de la primera búsqueda), no reduce el consumo si solo
   hay un usuario corriéndolo diariamente. Para uso diario sostenido,
   considera el plan de pago más económico de SerpAPI.
-- **Fallback automático a 2 semanas:** si un país no tiene ninguna
-  noticia relevante en la última semana, el código reintenta
-  automáticamente con un rango de 2 semanas antes de devolver "sin
-  resultados" (esto evita reportar vacío cuando la cobertura
-  simplemente fue escasa esa semana puntual). Esto significa que, en
-  el peor caso (varios países sin cobertura semanal), el consumo real
-  de SerpAPI puede ser hasta el doble de lo esperado — un país con
-  cobertura normal sigue gastando solo 1 búsqueda, pero uno sin
-  cobertura gasta 2 (la de 1 semana + el reintento de 2 semanas).
+- **Estrategia de búsqueda en TRES capas** (arquitectura más robusta,
+  implementada tras varias rondas de ruido cruzado entre países):
+  1. **site:** — cada país busca restringido a una lista curada de
+     medios reales (`SITIOS_PAIS` en `scraper.py`, investigada
+     manualmente). Esto elimina estructuralmente el ruido de otros
+     países: un sitio que no está en la lista no puede aparecer, sin
+     depender de detectar nombres de país, demónimos, o siglas en el
+     texto — la causa de fondo de varios bugs anteriores (Uruguay
+     colándose en Cuba/Guatemala, Veracruz en Honduras, etc.).
+  2. **Anclas de texto (respaldo)** — si la capa 1 no trae ninguna
+     noticia aceptada (la lista de sitios no cubre algún medio
+     relevante todavía no identificado), se reintenta sin restricción
+     de dominio, usando el nombre del país + su institución rectora.
+  3. **Agente verificador con Groq** — si después de las capas 1 y 2
+     no hay suficientes noticias para completar el cupo (n_noticias),
+     las candidatas que los filtros de texto habían descartado por
+     dudosas se revisan una por una con Groq ("¿esta noticia es
+     genuinamente relevante para este país?"), para rescatar casos
+     ambiguos que ningún filtro de texto puede anticipar de forma
+     exhaustiva. Esta capa SOLO se activa cuando hace falta — un país
+     con cobertura normal (la mayoría) nunca la usa, así que no
+     incrementa el consumo de cuota de Groq en el caso común.
+- **Fallback automático a 2 semanas:** dentro de las capas 1 y 2, si la
+  búsqueda de 1 semana no trae ninguna noticia aceptada, se reintenta
+  con un rango de 2 semanas antes de pasar a la siguiente capa (o
+  devolver "sin resultados"). Combinando todo lo anterior, el **peor
+  caso real es de hasta 4 búsquedas a SerpAPI por país** (site: en 1 y
+  2 semanas, anclas en 1 y 2 semanas) — esto solo ocurre cuando
+  genuinamente no hay cobertura noticiosa reciente. Un país con
+  cobertura normal sigue gastando solo 1 búsqueda.
 - **Groq (llama-3.3-70b-versatile), free tier:** 30 solicitudes/minuto,
   1,000 solicitudes/día, 12,000 tokens/minuto. Con **5 noticias por
   país × 10 países = 50 llamadas por ejecución**, el límite diario
