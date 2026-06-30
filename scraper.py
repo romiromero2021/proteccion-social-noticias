@@ -601,7 +601,14 @@ def _buscar_una_vez(
         return {"aceptadas": [], "descartadas_marginales": [], "error": f"Error de conexión con SerpAPI: {e}"}
 
     if "error" in data:
-        return {"aceptadas": [], "descartadas_marginales": [], "error": data["error"]}
+        mensaje = data["error"]
+        # "Google hasn't returned any results" NO es un error técnico —
+        # es simplemente que no hay resultados para esa query esta semana.
+        # Se trata como lista vacía para que el sistema continúe a la
+        # capa de respaldo (anclas de texto) en vez de detenerse aquí.
+        if "hasn't returned any results" in mensaje or "no results" in mensaje.lower():
+            return {"aceptadas": [], "descartadas_marginales": [], "error": None}
+        return {"aceptadas": [], "descartadas_marginales": [], "error": mensaje}
 
     noticias_crudas = data.get("news_results", [])
 
