@@ -147,6 +147,13 @@ PAISES_A_EXCLUIR_SI_NO_BUSCADOS = PAISES + [
     "Paraguay",
     "Uruguay",
     "Brasil",
+    "España",  # confirmado: noticia de Valladolid coló en El Salvador (17-jul-2026).
+               # NOTA: intencionalmente NO se agrega el demónimo "español/a" a
+               # DEMONIMOS_PAIS, porque también es el nombre del idioma ("en
+               # español") y generaría falsos positivos masivos. España se
+               # detecta por su nombre, por sus subdivisiones (ver
+               # SUBDIVISIONES_DE_RIESGO_CONFIRMADAS) y por señales textuales
+               # como "euros" (ver SENALES_TEXTUALES_PAIS).
 ]
 
 # Demónimos/adjetivos derivados de cada país, para detectar menciones
@@ -612,10 +619,18 @@ def _buscar_una_vez(
 
     noticias_crudas = data.get("news_results", [])
 
-    # Filtro de fecha: estricto, sin clasificar — una noticia vieja
-    # jamás debe llegar ni siquiera a la lista de descartadas marginales
-    # (no tiene sentido que el LLM "rescate" algo de hace años).
-    noticias_crudas = [item for item in noticias_crudas if _dentro_del_rango(item, dias_maximos_antiguedad)]
+    # Filtros DUROS, sin clasificar — estas noticias jamás llegan ni
+    # siquiera a descartadas_marginales, porque el verificador LLM no
+    # debe poder "rescatarlas":
+    #  - fecha fuera de rango (no tiene sentido rescatar algo viejo);
+    #  - dominio curado de OTRO país (certeza total del país real: si
+    #    diariolibre.com está curado para República Dominicana, una
+    #    noticia suya nunca pertenece al reporte de Haití).
+    noticias_crudas = [
+        item for item in noticias_crudas
+        if _dentro_del_rango(item, dias_maximos_antiguedad)
+        and not _dominio_curado_de_otro_pais(item, pais)
+    ]
 
     def _convertir(item: Dict) -> Dict:
         return {
@@ -635,11 +650,17 @@ def _buscar_una_vez(
             or _menciona_otro_pais(item, pais)
             or _dominio_de_otro_pais(item, pais)
             or _menciona_subdivision_de_riesgo(item, pais)
+            or _menciona_senal_de_otro_pais(item, pais)
         )
         if es_marginal:
             descartadas_marginales.append(_convertir(item))
         else:
             aceptadas.append(_convertir(item))
+
+    # Deduplicar por link y por similitud de título DENTRO de la misma
+    # búsqueda: Google News frecuentemente devuelve dos artículos del
+    # mismo evento (mismo medio, días consecutivos) con links distintos.
+    aceptadas = deduplicar_noticias(aceptadas)
 
     return {
         "aceptadas": aceptadas[:max_resultados],
@@ -749,14 +770,12 @@ def buscar_noticias_pais(
         # sí se obtuvo de la capa 1 en vez de perderlo todo.
         return resultado
 
-    # Combinar aceptadas de ambas capas, evitando duplicados por link
-    # (es posible que el mismo artículo aparezca en ambas búsquedas).
-    links_ya_vistos = {n["link"] for n in resultado["aceptadas"]}
-    aceptadas_combinadas = list(resultado["aceptadas"])
-    for noticia in resultado_anclas["aceptadas"]:
-        if noticia["link"] not in links_ya_vistos:
-            aceptadas_combinadas.append(noticia)
-            links_ya_vistos.add(noticia["link"])
+    # Combinar aceptadas de ambas capas, deduplicando tanto por link
+    # exacto como por similitud de título (el mismo evento puede llegar
+    # por ambas búsquedas como artículos distintos con links distintos).
+    aceptadas_combinadas = deduplicar_noticias(
+        resultado["aceptadas"] + resultado_anclas["aceptadas"]
+    )
 
     descartadas_combinadas = resultado["descartadas_marginales"] + resultado_anclas["descartadas_marginales"]
 
@@ -822,8 +841,51 @@ TLD_A_PAIS = {
 # caso real de ruido en un reporte generado (no de forma preventiva),
 # mapeado al país real al que pertenece esa subdivisión.
 SUBDIVISIONES_DE_RIESGO_CONFIRMADAS = {
-    "veracruz": "México",  # confirmado: coló en reporte de Honduras (24-jun-2026)
+    "veracruz": "México",         # confirmado: coló en reporte de Honduras (24-jun-2026)
+    "valladolid": "España",       # confirmado: coló en reporte de El Salvador (17-jul-2026)
+    "castilla y león": "España",  # región de Valladolid, mismo caso confirmado
+    # Regiones/ciudades españolas grandes, agregadas preventivamente tras el
+    # caso confirmado de Valladolid: España no tiene demónimo utilizable
+    # ("español" = idioma) ni TLD frecuente en Google News (.com abundan),
+    # así que las subdivisiones son su señal de detección principal.
+    "cataluña": "España",
+    "andalucía": "España",
+    "galicia": "España",
+    "país vasco": "España",
+    "comunidad de madrid": "España",
+    "castilla-la mancha": "España",
+    "extremadura": "España",
 }
+
+# Señales textuales que delatan el país real de una noticia aunque el
+# texto nunca lo nombre explícitamente: monedas, prefijos monetarios,
+# formatos locales. Confirmado con el caso "RD$15.8 millones" (pesos
+# dominicanos) que coló en el reporte de Haití (17-jul-2026) — el texto
+# jamás decía "dominicano", pero "RD$" solo puede ser República
+# Dominicana. Mapeo señal -> país real. Las señales se buscan como
+# subcadena en minúsculas (no word-boundary, porque símbolos como "$"
+# no funcionan con \b).
+SENALES_TEXTUALES_PAIS = {
+    "rd$": "República Dominicana",   # pesos dominicanos
+    "euros": "España",                # única economía en euros que genera ruido aquí
+    "€": "España",
+}
+
+
+def _menciona_senal_de_otro_pais(item: Dict, pais_buscado: str) -> bool:
+    """
+    True si el título o snippet contiene una señal textual (moneda,
+    formato local) de un país DISTINTO al buscado. Complementa a
+    _menciona_otro_pais para noticias que nunca nombran su país porque
+    es obvio para sus lectores locales (ej. "RD$15.8 millones").
+    """
+    texto = f"{item.get('title', '')} {item.get('snippet', '')}".lower()
+    for senal, pais_real in SENALES_TEXTUALES_PAIS.items():
+        if pais_real == pais_buscado:
+            continue
+        if senal in texto:
+            return True
+    return False
 
 
 def _dominio_de_otro_pais(item: Dict, pais_buscado: str) -> bool:
@@ -860,6 +922,105 @@ def _dominio_de_otro_pais(item: Dict, pais_buscado: str) -> bool:
         return False  # TLD genérico o no mapeado, no se descarta por esta vía
 
     return pais_del_tld != pais_buscado
+
+
+def _palabras_significativas(titulo: str) -> set:
+    """Conjunto de palabras normalizadas (sin tildes, minúsculas, >3
+    letras) de un título, para comparar similitud entre noticias."""
+    import unicodedata
+    sin_tildes = unicodedata.normalize("NFKD", titulo or "")
+    sin_tildes = "".join(c for c in sin_tildes if not unicodedata.combining(c))
+    palabras = re.findall(r"[a-záéíóúñü]+", sin_tildes.lower())
+    return {p for p in palabras if len(p) > 3}
+
+
+def titulos_similares(titulo_a: str, titulo_b: str, umbral: float = 0.6) -> bool:
+    """
+    True si dos títulos describen con alta probabilidad el mismo evento,
+    usando el coeficiente de solapamiento (intersección / tamaño del
+    conjunto menor) sobre palabras significativas. Se usa el coeficiente
+    de solapamiento y no Jaccard porque dos titulares del mismo evento
+    suelen compartir el núcleo ("derechos laborales buzos misquitos")
+    pero uno puede ser mucho más largo que el otro, lo que hunde el
+    Jaccard sin que dejen de ser la misma noticia.
+
+    Caso confirmado (17-jul-2026, Honduras): "Gobierno instala mesa de
+    seguimiento a derechos laborales para buzos misquitos" y "Pretenden
+    garantizar derechos laborales de buzos misquitos" — links distintos,
+    mismo evento, publicados por el mismo medio con un día de
+    diferencia. La deduplicación por link no los atrapa.
+    """
+    a = _palabras_significativas(titulo_a)
+    b = _palabras_significativas(titulo_b)
+    if not a or not b:
+        return False
+    solapamiento = len(a & b) / min(len(a), len(b))
+    return solapamiento >= umbral
+
+
+def deduplicar_noticias(noticias: List[Dict]) -> List[Dict]:
+    """
+    Elimina duplicados de una lista de noticias, en dos niveles:
+    por link exacto y por similitud de título (mismo evento cubierto en
+    artículos distintos). Conserva la primera aparición de cada una —
+    como las listas vienen ordenadas por relevancia/recencia de Google,
+    la primera suele ser la mejor versión.
+    """
+    resultado: List[Dict] = []
+    links_vistos: set = set()
+    for noticia in noticias:
+        link = noticia.get("link", "")
+        if link and link in links_vistos:
+            continue
+        if any(titulos_similares(noticia.get("titulo") or noticia.get("title", ""),
+                                 previa.get("titulo") or previa.get("title", ""))
+               for previa in resultado):
+            continue
+        resultado.append(noticia)
+        if link:
+            links_vistos.add(link)
+    return resultado
+
+
+# Mapa dominio -> país, derivado AUTOMÁTICAMENTE de SITIOS_PAIS. Si un
+# dominio está curado como medio de prensa del país X, una noticia suya
+# jamás puede pertenecer al reporte del país Y — es la señal de país más
+# confiable que existe (más que el texto y más que el TLD). Confirmado
+# con el caso diariolibre.com (curado para República Dominicana) que
+# coló en el reporte de Haití (17-jul-2026) por la capa de anclas de
+# texto. Al derivarse de SITIOS_PAIS, este filtro no requiere ningún
+# mantenimiento propio: cada medio agregado a la lista de un país queda
+# automáticamente vetado para los otros nueve.
+_DOMINIO_CURADO_A_PAIS = {
+    dominio: pais
+    for pais, dominios in SITIOS_PAIS.items()
+    for dominio in dominios
+}
+
+
+def _dominio_curado_de_otro_pais(item: Dict, pais_buscado: str) -> bool:
+    """
+    True si el link de la noticia pertenece a un dominio que está en
+    SITIOS_PAIS de OTRO país. Certeza total: es un descarte duro (la
+    noticia ni siquiera pasa a descartadas_marginales, porque el
+    verificador LLM no debe poder "rescatarla" — sabemos con seguridad
+    de qué país es el medio).
+
+    Hace match también sobre subdominios (ej. "diario.elmundo.sv"
+    calza con el dominio curado "elmundo.sv").
+    """
+    link = item.get("link", "")
+    if not link:
+        return False
+
+    netloc = urlparse(link).netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+
+    for dominio, pais_del_dominio in _DOMINIO_CURADO_A_PAIS.items():
+        if netloc == dominio or netloc.endswith("." + dominio):
+            return pais_del_dominio != pais_buscado
+    return False
 
 
 def _menciona_subdivision_de_riesgo(item: Dict, pais_buscado: str) -> bool:

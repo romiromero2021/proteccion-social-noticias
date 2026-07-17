@@ -13,6 +13,7 @@ import io
 import time
 from datetime import datetime
 from cache import ZONA_HORARIA
+from scraper import deduplicar_noticias, titulos_similares
 from typing import List, Dict
 
 import groq
@@ -89,11 +90,22 @@ def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key:
         f"Eres un verificador estricto de relevancia temática para {pais}.\n\n"
         f"Título: {titulo}\n"
         f"Extracto: {snippet}\n\n"
-        f"Pregunta: ¿Esta noticia trata genuinamente sobre programas de "
-        f"protección social, seguridad social, asistencia social, o "
-        f"políticas de desarrollo social EN {pais} específicamente "
-        f"(no en otro país, y no un tema no relacionado como deportes, "
-        f"farándula, o política general sin relación con estos programas)?\n\n"
+        f"Pregunta: ¿Esta noticia trata genuinamente sobre programas, "
+        f"políticas o instituciones PÚBLICAS de protección social, "
+        f"seguridad social, asistencia social o desarrollo social "
+        f"DE {pais}?\n\n"
+        f"Responde NO si se cumple cualquiera de estos casos:\n"
+        f"- La noticia es de otro país o sobre otro país (aunque el "
+        f"evento ocurra físicamente en {pais}).\n"
+        f"- Es caridad puntual, donaciones o colectas de entidades "
+        f"privadas (empresas, clubes, fundaciones, iglesias), no un "
+        f"programa o política pública de protección social.\n"
+        f"- La ayuda está dirigida principalmente a población de otro "
+        f"país (ej. migrantes o familias de otra nacionalidad).\n"
+        f"- Es sobre loterías, sorteos, deportes, farándula o política "
+        f"general sin relación directa con estos programas.\n"
+        f"- Solo menciona una institución de protección social de "
+        f"forma tangencial, sin que sea el tema central.\n\n"
         f"Responde ÚNICAMENTE con una palabra: SI o NO."
     )
 
@@ -222,7 +234,11 @@ def seleccionar_top_n(noticias: List[Dict], n: int = 3) -> List[Dict]:
         noticia for noticia in noticias
         if "error" not in noticia and noticia.get("titulo")
     ]
-    return validas[:n]
+    # Red de seguridad final contra duplicados (por link y por similitud
+    # de título) — scraper.py ya deduplica, pero esta capa garantiza que
+    # el reporte final nunca muestre el mismo evento dos veces, venga de
+    # donde venga (caché de versiones anteriores incluido).
+    return deduplicar_noticias(validas)[:n]
 
 
 def _completar_con_verificacion_llm(
@@ -267,6 +283,13 @@ def _completar_con_verificacion_llm(
         link = candidata.get("link")
         if link and link in links_ya_incluidos:
             continue  # ya está en el reporte (vino de la otra capa) — no revisar de nuevo
+
+        # Mismo evento con otro link (artículo distinto): tampoco se
+        # revisa ni se incluye — evita duplicados y ahorra la llamada
+        # a Groq que costaría verificarla.
+        if any(titulos_similares(candidata.get("titulo", ""), ya.get("titulo", ""))
+               for ya in resultado):
+            continue
 
         if candidatas_sin_revisar > 0:
             time.sleep(ESPERA_ENTRE_LLAMADAS_SEGUNDOS)
