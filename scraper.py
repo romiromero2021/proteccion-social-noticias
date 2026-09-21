@@ -289,6 +289,9 @@ TERMINOS_TEMATICOS_FRANCES = [
     "assistance sociale",
     "transferts monétaires",
     "ministère des affaires sociales",
+    "système de retraite",   # la reforma de pensiones domina la agenda haitiana
+    "assurance-vieillesse",
+    "filets sociaux",
 ]
 
 # Palabras clave de relevancia en francés, para que _es_relevante_al_tema
@@ -306,6 +309,24 @@ PALABRAS_CLAVE_RELEVANCIA_FRANCES = [
     "ministère des affaires sociales",
     "mast",
     "pnpps",  # Politique Nationale de Protection et de Promotion Sociales
+    # Vocabulario agregado el 21-sep-2026 tras comprobar que faltaba lo
+    # esencial: dos de las mejores noticias haitianas de la semana —el
+    # foro nacional sobre la reforma del sistema de pensiones, en Le
+    # Nouvelliste y AlterPresse— eran rechazadas como "no relevantes"
+    # porque "retraite" (jubilación) y "ONA" (la caja de pensiones
+    # haitiana) no figuraban en esta lista. El equivalente sería
+    # descartar en México una nota sobre el IMSS.
+    "retraite", "retraites",           # jubilación / pensiones
+    "système de retraite",
+    "assurance-vieillesse", "assurance vieillesse",
+    "pension", "pensions",             # en francés
+    "ona",                             # Office National d'Assurance-vieillesse
+    "ofatma",                          # Office d'Assurance Accidents du Travail et Maladie
+    "filets sociaux", "filet social",  # redes de protección
+    "aide sociale",
+    "cantine scolaire", "cantines scolaires",  # alimentación escolar
+    "klere chimen",                    # programa social haitiano
+    "sécurité alimentaire", "securite alimentaire",
 ]
 
 # Palabras/fragmentos clave usados para el filtro de relevancia en
@@ -376,7 +397,14 @@ def construir_query_site(pais: str, terminos: Optional[List[str]] = None) -> str
     """
     terminos = terminos or TERMINOS_TEMATICOS
     if pais == "Haití":
-        terminos = list(terminos) + TERMINOS_TEMATICOS_FRANCES
+        # Para Haití se usan SOLO los términos en francés, no la suma de
+        # español + francés. La prensa haitiana (Le Nouvelliste,
+        # AlterPresse, HaitiLibre, los medios curados del país) publica
+        # en francés: los seis términos en español no aportan resultados
+        # y solo alargan la consulta. Comprobado el 21-sep-2026: una
+        # consulta corta en francés devolvió ocho noticias haitianas
+        # pertinentes, cuatro de ellas de medios curados.
+        terminos = list(TERMINOS_TEMATICOS_FRANCES)
 
     terminos_con_or = " OR ".join(f'"{t}"' for t in terminos)
 
@@ -418,7 +446,14 @@ def construir_query(pais: str, terminos: Optional[List[str]] = None) -> str:
     """
     terminos = terminos or TERMINOS_TEMATICOS
     if pais == "Haití":
-        terminos = list(terminos) + TERMINOS_TEMATICOS_FRANCES
+        # Para Haití se usan SOLO los términos en francés, no la suma de
+        # español + francés. La prensa haitiana (Le Nouvelliste,
+        # AlterPresse, HaitiLibre, los medios curados del país) publica
+        # en francés: los seis términos en español no aportan resultados
+        # y solo alargan la consulta. Comprobado el 21-sep-2026: una
+        # consulta corta en francés devolvió ocho noticias haitianas
+        # pertinentes, cuatro de ellas de medios curados.
+        terminos = list(TERMINOS_TEMATICOS_FRANCES)
 
     terminos_con_or = " OR ".join(f'"{t}"' for t in terminos)
 
@@ -438,6 +473,21 @@ def construir_query(pais: str, terminos: Optional[List[str]] = None) -> str:
     # repiten entre países del proyecto (ver docstring) — combinarlas
     # con OR permitiría que la institución sola bastara para el match.
     return f'({terminos_con_or}) ({anclas_pais_con_or})'
+
+
+def _tema_en_el_titulo(item: Dict) -> bool:
+    """
+    True si el TÍTULO (no el snippet) contiene una palabra clave del
+    tema. Señal más fuerte que la relevancia general: cuando el tema
+    aparece solo en el snippet, suele ser una mención de pasada.
+
+    Caso confirmado (21-sep-2026): "¿Cuánto y cómo usa la industria la
+    IA en Costa Rica?" entró al reporte porque su snippet mencionaba
+    una "conferencia de seguridad social" que el directivo citado iba a
+    atender. El título deja claro que la noticia es sobre inteligencia
+    artificial en la industria, no sobre protección social.
+    """
+    return _es_relevante_al_tema({"title": item.get("title", ""), "snippet": ""})
 
 
 def _es_relevante_al_tema(item: Dict, palabras_clave: Optional[List[str]] = None) -> bool:
@@ -699,8 +749,40 @@ def _buscar_una_vez(
     aceptadas = []
     descartadas_marginales = []
     for item in noticias_crudas:
+        # Prueba de pertenencia al país: o bien el medio que publica está
+        # curado para este país (prueba por dominio), o bien el texto
+        # nombra al país explícitamente (prueba por contenido). Si no se
+        # cumple ninguna, no hay evidencia de que la noticia sea del país
+        # y se manda al verificador en vez de aceptarla.
+        #
+        # Confirmado el 21-sep-2026: en el reporte de El Salvador se coló
+        # "Centro de Asistencia Social de Benito Juárez mantiene bajo
+        # resguardo a 32 menores migrantes", publicada por un medio de
+        # Quintana Roo (México) en un dominio .com. No la atrapaba ningún
+        # filtro: el TLD es genérico, el medio no está en las listas
+        # curadas, no menciona "México" ni "mexicano", y "Quintana Roo"
+        # no figura entre las subdivisiones de riesgo. Pero tampoco
+        # menciona "El Salvador" ni "salvadoreño" por ningún lado, que es
+        # justo lo que esta regla exige.
+        de_medio_curado = _es_dominio_curado_del_pais(item, pais)
+
+        sin_evidencia_de_pais = (
+            not de_medio_curado
+            and not _menciona_el_pais(item, pais)
+        )
+
+        # Los medios curados se aceptan con el filtro temático normal
+        # (título o snippet). Para los demás se exige la señal fuerte:
+        # el tema en el TÍTULO. Sin esa exigencia entraban noticias de
+        # otro asunto que solo rozaban el tema en el snippet — ver
+        # _tema_en_el_titulo. No aceptarlas no las pierde: pasan al
+        # verificador, que decide con criterio en vez de por palabra.
+        tema_demasiado_debil = not de_medio_curado and not _tema_en_el_titulo(item)
+
         es_marginal = (
             es_respaldo_web  # resultado web, no noticia: siempre lo revisa el verificador
+            or sin_evidencia_de_pais
+            or tema_demasiado_debil
             or not _es_relevante_al_tema(item)
             or _menciona_otro_pais(item, pais)
             or _dominio_de_otro_pais(item, pais)
@@ -1064,6 +1146,47 @@ _DOMINIO_CURADO_A_PAIS = {
     for pais, dominios in SITIOS_PAIS.items()
     for dominio in dominios
 }
+
+
+def _es_dominio_curado_del_pais(item: Dict, pais_buscado: str) -> bool:
+    """True si el link pertenece a un medio curado DEL país buscado."""
+    link = item.get("link", "")
+    if not link:
+        return False
+    netloc = urlparse(link).netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    for dominio in SITIOS_PAIS.get(pais_buscado, []):
+        if netloc == dominio or netloc.endswith("." + dominio):
+            return True
+    return False
+
+
+# Variantes adicionales del nombre de un país que aparecen en la prensa
+# y no se derivan del nombre en español ni de los demónimos.
+_NOMBRES_ALTERNOS_PAIS = {
+    "Haití": ["haïti", "haiti"],            # grafía francesa y sin tilde
+    "República Dominicana": ["rd", "quisqueya"],
+    "México": ["cdmx", "mexico"],
+    "Panamá": ["panama"],
+}
+
+
+def _menciona_el_pais(item: Dict, pais_buscado: str) -> bool:
+    """
+    True si el título o snippet nombra explícitamente al país buscado,
+    por su nombre, su demónimo o alguna variante habitual en prensa.
+    """
+    texto = f"{item.get('title', '')} {item.get('snippet', '')}".lower()
+    candidatos = (
+        [pais_buscado.lower()]
+        + [d.lower() for d in DEMONIMOS_PAIS.get(pais_buscado, [])]
+        + _NOMBRES_ALTERNOS_PAIS.get(pais_buscado, [])
+    )
+    return any(
+        re.search(r"\b" + re.escape(c) + r"\b", texto)
+        for c in candidatos
+    )
 
 
 def _dominio_curado_de_otro_pais(item: Dict, pais_buscado: str) -> bool:

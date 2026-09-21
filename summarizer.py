@@ -5,7 +5,7 @@ Responsabilidad única: recibir las noticias crudas del Agente 1
 (separadas en "aceptadas" y "descartadas_marginales"), completar el
 cupo de noticias por país (usando un agente verificador con Groq
 sobre las descartadas marginales si hace falta), generar un resumen
-breve de cada una usando Groq (Llama 3.3 70B), y producir un
+breve de cada una usando Groq (ver MODELOS_GROQ), y producir un
 documento Word (.docx) con el reporte final.
 """
 
@@ -168,11 +168,25 @@ def _llamar_groq_con_reintentos(
         for intento in range(1, MAX_REINTENTOS + 1):
             try:
                 cliente = Groq(api_key=groq_api_key)
+
+                # Los modelos gpt-oss son de RAZONAMIENTO: antes de
+                # responder generan tokens de pensamiento interno que
+                # consumen el mismo presupuesto que la respuesta. Con
+                # "low" se reduce ese gasto al mínimo, que es lo que
+                # conviene aquí: resumir un texto dado y responder SI/NO
+                # no requieren deliberación extensa, y cada token de
+                # razonamiento come cuota del límite de 8,000 por minuto.
+                # Solo se envía a los modelos que lo soportan.
+                extra = {}
+                if modelo.startswith("openai/gpt-oss"):
+                    extra["reasoning_effort"] = "low"
+
                 respuesta = cliente.chat.completions.create(
                     model=modelo,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=temperature,
                     max_completion_tokens=max_completion_tokens,
+                    **extra,
                 )
                 texto = (respuesta.choices[0].message.content or "").strip()
                 if texto:
@@ -284,7 +298,7 @@ def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key:
     )
 
     texto, _error = _llamar_groq_con_reintentos(
-        groq_api_key, prompt, temperature=0, max_completion_tokens=10
+        groq_api_key, prompt, temperature=0, max_completion_tokens=200
     )
     if texto is None:
         return False  # fail-closed: sin verificación real no hay rescate (ver docstring)
@@ -337,7 +351,7 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
     )
 
     texto, error = _llamar_groq_con_reintentos(
-        groq_api_key, prompt, temperature=0.3, max_completion_tokens=200
+        groq_api_key, prompt, temperature=0.3, max_completion_tokens=800
     )
 
     if texto is not None:
