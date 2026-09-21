@@ -637,6 +637,42 @@ def _buscar_una_vez(
 
     noticias_crudas = data.get("news_results", [])
 
+    # Respaldo con resultados web (organic_results).
+    #
+    # Cuando la consulta es muy restrictiva —como la de la capa 1, que
+    # limita a 4-6 medios con site:— Google a veces decide que no hay
+    # suficientes resultados en su pestaña de Noticias y devuelve
+    # resultados web en su lugar: "news_results_state": "Fully empty"
+    # y un bloque "organic_results". Confirmado el 21-sep-2026 con la
+    # consulta real de Costa Rica: 0 news_results y 10 organic_results,
+    # todos de los medios curados y sobre el tema (Fodesaf, JUPEMA,
+    # huelga de la CCSS). Como el código solo leía news_results, esa
+    # cosecha se descartaba entera y la capa 1 quedaba en cero.
+    #
+    # Solo se usan si no hubo news_results, y solo los que traen fecha:
+    # un resultado web sin fecha suele ser una página permanente
+    # (secciones, índices) y no una noticia publicada esta semana.
+    #
+    # IMPORTANTE: estos resultados NUNCA se aceptan directamente, entran
+    # siempre como "descartadas marginales" para que el verificador de
+    # Groq los revise uno por uno. Google mismo indicó que no son
+    # noticias, así que son evidencia de segunda: en la prueba real
+    # venían mezclados cuatro casos de mención tangencial (una nota de
+    # farándula que cita "seguridad social" al pasar, el calendario del
+    # aguinaldo, un análisis electoral que menciona el Índice de
+    # Desarrollo Social, y una página índice de sección). Los filtros de
+    # palabras clave no distinguen eso; el verificador sí, porque su
+    # prompt rechaza explícitamente las menciones tangenciales y la
+    # farándula. Aceptarlos sin verificar llenaría el cupo con ruido y,
+    # de paso, impediría que el verificador llegara a actuar.
+    es_respaldo_web = False
+    if not noticias_crudas:
+        noticias_crudas = [
+            item for item in data.get("organic_results", [])
+            if item.get("date")
+        ]
+        es_respaldo_web = bool(noticias_crudas)
+
     # Filtros DUROS, sin clasificar — estas noticias jamás llegan ni
     # siquiera a descartadas_marginales, porque el verificador LLM no
     # debe poder "rescatarlas":
@@ -664,7 +700,8 @@ def _buscar_una_vez(
     descartadas_marginales = []
     for item in noticias_crudas:
         es_marginal = (
-            not _es_relevante_al_tema(item)
+            es_respaldo_web  # resultado web, no noticia: siempre lo revisa el verificador
+            or not _es_relevante_al_tema(item)
             or _menciona_otro_pais(item, pais)
             or _dominio_de_otro_pais(item, pais)
             or _menciona_subdivision_de_riesgo(item, pais)
@@ -767,10 +804,20 @@ def buscar_noticias_pais(
     query_site = construir_query_site(pais, terminos)
     resultado = _buscar_con_fallback_fecha(query_site)
 
-    if resultado["error"] is not None:
-        return resultado  # error de conexión/API, no tiene sentido reintentar con otra query
+    # Si la capa 1 falló, NO se abandona el país: se intenta igual la
+    # capa 2, cuya consulta es mucho más simple (sin el operador
+    # "site:"). Motivo confirmado en producción el 20-sep-2026: SerpAPI
+    # tuvo una incidencia abierta ("requests timing out while using
+    # tbm=nws with advanced parameters" / "searches with advanced
+    # operators time out intermittently") que hacía fallar justamente
+    # las consultas con site:, mientras las simples seguían
+    # respondiendo. Con el comportamiento anterior —abandonar el país
+    # ante cualquier error de la capa 1— los 10 países quedaban vacíos
+    # aunque la capa 2 hubiera funcionado. El error de la capa 1 se
+    # recuerda por si la capa 2 también falla.
+    error_capa_1 = resultado["error"]
 
-    if len(resultado["aceptadas"]) >= n_noticias_necesarias:
+    if error_capa_1 is None and len(resultado["aceptadas"]) >= n_noticias_necesarias:
         return resultado
 
     # Capa 2: respaldo con anclas de texto, sin restricción de dominio.
@@ -784,8 +831,11 @@ def buscar_noticias_pais(
     resultado_anclas = _buscar_con_fallback_fecha(query_anclas)
 
     if resultado_anclas["error"] is not None:
-        # La capa 2 falló por error de conexión/API — se devuelve lo que
-        # sí se obtuvo de la capa 1 en vez de perderlo todo.
+        # La capa 2 también falló. Si la capa 1 había funcionado, se
+        # devuelve lo suyo en vez de perderlo todo; si ambas fallaron,
+        # entonces sí es un error real y se reporta.
+        if error_capa_1 is not None:
+            return {"aceptadas": [], "descartadas_marginales": [], "error": error_capa_1}
         return resultado
 
     # Combinar aceptadas de ambas capas, deduplicando tanto por link
