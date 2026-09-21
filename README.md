@@ -1,4 +1,4 @@
-# Resumen Diario: Programas de Protección Social (México, CA + Caribe)
+# Resumen Diario: Programas de Protección Social (CA + Caribe)
 
 App con dos agentes que recolectan y resumen noticias diarias sobre
 programas de protección social en Costa Rica, Cuba, El Salvador,
@@ -14,7 +14,7 @@ país** para refrescar solo uno sin gastar cuota en los otros 9.
 ```
 app.py          -> Interfaz Streamlit, orquesta los dos agentes + caché
 scraper.py       -> AGENTE 1: recolecta noticias vía SerpAPI (google_news)
-summarizer.py    -> AGENTE 2: resume con Groq (Llama 3.3 70B) + genera el .docx
+summarizer.py    -> AGENTE 2: resume con Groq (GPT OSS 120B) + genera el .docx
 cache.py         -> Caché diario por país en SQLite (cache_noticias.db)
 requirements.txt -> Dependencias
 ```
@@ -107,14 +107,22 @@ pestaña de país en vez de "🆕 Recién generado".
 
 ## Notas sobre cuotas (para no quedarte sin crédito)
 
-- **SerpAPI free tier:** ~100 búsquedas/mes. Con el caché diario, en el
-  mejor caso (1 sola persona usando la app, 1 vez al día) consumes
-  ~10 búsquedas/día = ~300/mes, lo cual **sigue excediendo** el free
-  tier si lo corres todos los días. El caché ayuda principalmente
-  cuando **varios usuarios** comparten la misma app el mismo día (todos
-  se benefician de la primera búsqueda), no reduce el consumo si solo
-  hay un usuario corriéndolo diariamente. Para uso diario sostenido,
-  considera el plan de pago más económico de SerpAPI.
+- **SerpAPI free tier:** ~100 búsquedas/mes. **Un reporte completo de los
+  10 países consume entre 10 y 40 búsquedas** (típicamente ~30): cada
+  país gasta 1 búsqueda si la capa `site:` ya llena el cupo, y hasta 4
+  si hay que complementar con la capa de anclas y con el respaldo de 2
+  semanas. Con ese consumo, el free tier alcanza para **unos 3 reportes
+  completos al mes**, no para uso diario.
+
+  El caché diario evita repetir búsquedas *dentro del mismo día*, así que
+  ayuda cuando **varias personas** consultan la app la misma jornada
+  (todas aprovechan la primera búsqueda), pero no reduce el consumo si
+  una sola persona la corre todos los días. Para uso sostenido hace falta
+  el plan de pago más económico de SerpAPI.
+
+  **Antes de una demostración o presentación, conviene revisar el crédito
+  restante en el panel de serpapi.com**: si la cuota se agotó, la app
+  mostrará un error de búsqueda en todos los países.
 - **Estrategia de búsqueda en TRES capas** (arquitectura más robusta,
   implementada tras varias rondas de ruido cruzado entre países):
   1. **site:** — cada país busca restringido a una lista curada de
@@ -145,17 +153,45 @@ pestaña de país en vez de "🆕 Recién generado".
   2 semanas, anclas en 1 y 2 semanas) — esto solo ocurre cuando
   genuinamente no hay cobertura noticiosa reciente. Un país con
   cobertura normal sigue gastando solo 1 búsqueda.
-- **Groq (llama-3.3-70b-versatile), free tier:** 30 solicitudes/minuto,
-  1,000 solicitudes/día, 12,000 tokens/minuto. Con **5 noticias por
+- **Groq (openai/gpt-oss-120b), free tier:** 30 solicitudes/minuto,
+  1,000 solicitudes/día y **8,000 tokens/minuto**. Con **5 noticias por
   país × 10 países = 50 llamadas por ejecución**, el límite diario
-  (1,000 RPD) sobra de lejos, pero el límite **por minuto (30 RPM)**
-  sí puede alcanzarse si las 50 llamadas se disparan muy rápido — el
-  código ya maneja esto con reintentos automáticos y espera progresiva
-  (2s, 4s, 8s) cuando Groq responde "demasiadas peticiones", así que la
-  ejecución simplemente tarda un poco más en esos casos en vez de fallar.
-  Si notas que muchos países muestran "⚠️ ver detalle técnico" con error
-  429, es buena señal de que estás chocando contra el límite por minuto;
-  no es un problema grave, solo toma más tiempo terminar.
+  (1,000 RPD) sobra de lejos. El límite que sí manda es el de **tokens
+  por minuto**: cada resumen consume ~440 tokens entre entrada y salida,
+  así que el techo real son ~18 llamadas por minuto, no 30. Por eso el
+  código espera **3.5 segundos entre llamadas** (constante
+  `ESPERA_ENTRE_LLAMADAS_SEGUNDOS` en `summarizer.py`), lo que hace que
+  un reporte completo tome unos 3 minutos de forma estable en vez de
+  chocar contra el límite.
+
+  Nota: el modelo anterior permitía 12,000 tokens/minuto; al migrar a
+  `gpt-oss-120b` el margen se redujo, y el ritmo se ajustó en
+  consecuencia. Si aun así aparecen errores 429 en el detalle técnico,
+  el código los absorbe con reintentos y espera progresiva (2s, 4s, 8s):
+  la ejecución tarda más, pero no falla.
+
+## Mantenimiento: deprecaciones de modelos de Groq
+
+Groq retira modelos periódicamente. Avisa por correo con semanas de
+anticipación y los apaga en una fecha fija; después de esa fecha, las
+llamadas a ese modelo fallan y el Agente 2 deja de generar resúmenes.
+**Esto ya ocurrió**: el 16 de agosto de 2026 se apagó
+`llama-3.3-70b-versatile`, que era el único modelo de la app, y los
+reportes pasaron a mostrar el texto original de cada noticia en vez de
+un resumen.
+
+Para que no vuelva a tumbar la app, `summarizer.py` ya no depende de un
+modelo único sino de una **lista de respaldo** (`MODELOS_GROQ`). Si el
+modelo preferido ya no existe, el sistema pasa solo al siguiente y sigue
+trabajando; además, la app ahora muestra un aviso rojo bien visible
+cuando ningún resumen pudo generarse, en vez de fallar en silencio.
+
+**Cuándo actuar:** al recibir un correo de deprecación de Groq, o si el
+panel lateral muestra un modelo distinto al esperado. La acción es
+sencilla: agregar el modelo nuevo **al inicio** de `MODELOS_GROQ` en
+`summarizer.py` y subir el archivo. La tabla oficial de retiros está en
+https://console.groq.com/docs/deprecations — conviene revisarla cada
+pocos meses, porque los modelos de respaldo también pueden caducar.
 
 ## Posibles mejoras futuras
 
@@ -166,7 +202,7 @@ pestaña de país en vez de "🆕 Recién generado".
 - Programar la ejecución automática diaria (ej. con un cron job o
   GitHub Actions) que llene el caché una vez al día, para que los
   usuarios siempre encuentren el reporte ya listo sin esperar.
-- Agregar una pequeña espera entre llamadas consecutivas a Groq (ej.
-  1-2 segundos) para repartir las 50 llamadas dentro del límite de 30
-  RPM sin depender tanto de los reintentos.
+- Evaluar un plan de pago de Groq si el uso diario lo justifica: subiría
+  el límite de tokens por minuto y permitiría bajar la espera entre
+  llamadas, acortando el tiempo del reporte completo.
 
