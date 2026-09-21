@@ -25,14 +25,74 @@ from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.ns import qn
 
 # ---------------------------------------------------------------------------
-# 1. CONFIGURACIÓN DE GROQ
+# 1. CONFIGURACIÓN DE GROQ — modelos y cadena de respaldo ante deprecaciones
 # ---------------------------------------------------------------------------
+# Groq retira modelos periódicamente (avisa por correo y los apaga en una
+# fecha fija). El 16-ago-2026 apagó "llama-3.3-70b-versatile", que era el
+# modelo único de esta app: a partir de esa fecha TODAS las llamadas al
+# Agente 2 (verificación y resúmenes) empezaron a fallar en silencio, y la
+# app quedó mostrando solo el texto original de cada noticia.
+#
+# Para que una próxima deprecación no vuelva a tumbar la app, ya no se usa
+# un modelo único sino una LISTA en orden de preferencia. Si el primero
+# responde "modelo no encontrado/retirado", el sistema pasa automáticamente
+# al siguiente y sigue trabajando (ver _llamar_groq_con_reintentos). El
+# modelo que funciona se recuerda durante la ejecución, así que el fallback
+# se paga una sola vez y no en cada una de las ~50 llamadas del reporte.
+#
+# La lista mezcla familias distintas a propósito: si Groq retira toda una
+# familia de golpe, la otra sigue en pie.
+#
+# MANTENIMIENTO: cuando llegue un correo de deprecación de Groq, basta con
+# agregar el modelo nuevo al inicio de esta lista. Tabla oficial de retiros:
+# https://console.groq.com/docs/deprecations
+MODELOS_GROQ = [
+    "openai/gpt-oss-120b",   # reemplazo recomendado por Groq para llama-3.3-70b (ago-2026)
+    "openai/gpt-oss-20b",    # hermano menor: más rápido y barato, misma familia
+    "qwen/qwen3.8-27b",      # último recurso, otra familia (sucesor de qwen3.6-27b, retirado 14-sep-2026)
+]
 
-MODELO_GROQ = "llama-3.3-70b-versatile"  # buena calidad en español, rápido, free tier generoso
+# Índice del modelo que está funcionando ahora mismo. Arranca en 0 (el
+# preferido) y solo avanza si Groq confirma que ese modelo ya no existe.
+_indice_modelo_activo = 0
+
+# Fragmentos que aparecen en el mensaje de error de Groq cuando un modelo
+# fue retirado o no existe. Se detectan por texto porque Groq los reporta
+# como un 404/400 genérico, sin un código de error propio distinguible.
+_SENALES_MODELO_RETIRADO = (
+    "model_not_found",
+    "does not exist",
+    "no longer supported",
+    "decommissioned",
+    "has been deprecated",
+    "model_decommissioned",
+)
 
 MAX_REINTENTOS = 3
 ESPERA_BASE_SEGUNDOS = 2  # backoff exponencial: 2s, 4s, 8s
-ESPERA_ENTRE_LLAMADAS_SEGUNDOS = 1.3  # ritmo entre llamadas para no chocar contra 30 RPM de Groq
+# Ritmo entre llamadas consecutivas a Groq. El factor que manda NO es el
+# límite de peticiones por minuto (30 RPM) sino el de TOKENS por minuto:
+# openai/gpt-oss-120b tiene 8,000 TPM en el plan gratuito, menos que los
+# 12,000 del modelo anterior. Cada resumen consume ~440 tokens (entrada +
+# salida), así que el techo real es ~18 llamadas/minuto ≈ 3.3 s entre
+# llamadas. Con el valor anterior (1.3 s) la app pedía ~20,500 tokens/min
+# y chocaba de lleno contra el límite: los reintentos con espera lo
+# absorbían, pero el reporte tardaba de forma impredecible y algunos
+# resúmenes terminaban cayendo al texto original.
+# Con 3.5 s, un reporte completo (50 llamadas) toma ~3 minutos de forma
+# estable. Si algún día se sube a un plan de pago, este valor puede bajar.
+ESPERA_ENTRE_LLAMADAS_SEGUNDOS = 3.5
+
+
+def modelo_en_uso() -> str:
+    """Nombre del modelo de Groq que la app está usando en este momento."""
+    return MODELOS_GROQ[_indice_modelo_activo]
+
+
+def _es_error_de_modelo_retirado(excepcion: Exception) -> bool:
+    """True si el error indica que el modelo pedido ya no existe en Groq."""
+    mensaje = str(excepcion).lower()
+    return any(senal in mensaje for senal in _SENALES_MODELO_RETIRADO)
 
 # Frases típicas de una "meta-explicación" (el modelo explica que no puede
 # resumir en vez de resumir). Si el resumen generado contiene alguna de
@@ -40,6 +100,10 @@ ESPERA_ENTRE_LLAMADAS_SEGUNDOS = 1.3  # ritmo entre llamadas para no chocar cont
 # seguridad adicional al prompt — los LLMs no son 100% deterministas.
 _PATRONES_META_EXPLICACION = (
     "no hay información disponible",
+    "no hay suficiente información",
+    "no hay información suficiente",
+    "no proporciona suficiente información",
+    "información insuficiente",
     "no se proporciona",
     "no es posible ofrecer un resumen",
     "no es posible generar un resumen",
@@ -61,6 +125,112 @@ def _es_meta_explicacion(texto: str) -> bool:
     return any(patron in texto_normalizado for patron in _PATRONES_META_EXPLICACION)
 
 
+def _llamar_groq_con_reintentos(
+    groq_api_key: str,
+    prompt: str,
+    temperature: float,
+    max_completion_tokens: int,
+):
+    """
+    Única puerta de salida hacia Groq para todo el módulo. Resuelve dos
+    problemas distintos que antes cada función manejaba por su cuenta (o
+    no manejaba):
+
+    1. ERRORES TRANSITORIOS (rate limit 429, 5xx, caídas de conexión):
+       se reintenta el mismo modelo con backoff exponencial. Es el modo de
+       fallo más frecuente cuando el volumen crece (~50 llamadas por
+       reporte contra un límite de 30 por minuto).
+
+    2. MODELO RETIRADO: si Groq responde que el modelo ya no existe, no
+       tiene sentido reintentarlo — se avanza al siguiente de MODELOS_GROQ
+       y se recuerda ese cambio para el resto de la ejecución, de modo que
+       las llamadas siguientes vayan directo al modelo que sí funciona.
+
+    Returns
+    -------
+    (texto, error): texto es la respuesta de Groq (str) si alguna llamada
+    tuvo éxito, o None si fallaron todas; error es None en éxito, o un str
+    describiendo el último fallo.
+    """
+    global _indice_modelo_activo
+
+    ultimo_error = None
+
+    # Se recorren los modelos disponibles desde el activo en adelante.
+    while _indice_modelo_activo < len(MODELOS_GROQ):
+        modelo = MODELOS_GROQ[_indice_modelo_activo]
+        # Solo se cambia de modelo cuando Groq CONFIRMA que el actual ya
+        # no existe. Un rate limit o una caída pasajera no son motivo:
+        # son problemas de la cuenta o del servicio, no del modelo, y el
+        # siguiente de la lista chocaría contra exactamente lo mismo.
+        modelo_retirado = False
+
+        for intento in range(1, MAX_REINTENTOS + 1):
+            try:
+                cliente = Groq(api_key=groq_api_key)
+                respuesta = cliente.chat.completions.create(
+                    model=modelo,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                    max_completion_tokens=max_completion_tokens,
+                )
+                texto = (respuesta.choices[0].message.content or "").strip()
+                if texto:
+                    return texto, None
+                ultimo_error = f"Groq ({modelo}) devolvió una respuesta vacía."
+                return None, ultimo_error
+
+            except groq.RateLimitError as e:
+                ultimo_error = f"Intento {intento} [{modelo}]: RateLimitError (429) - {e}"
+                if intento < MAX_REINTENTOS:
+                    time.sleep(ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1)))
+                    continue
+
+            except groq.APIStatusError as e:
+                ultimo_error = f"Intento {intento} [{modelo}]: APIStatusError {e.status_code} - {e}"
+                if _es_error_de_modelo_retirado(e):
+                    modelo_retirado = True
+                    break  # modelo muerto: no reintentar, probar el siguiente
+                # 5xx son transitorios; otros 4xx (key inválida, etc.) no
+                # se arreglan reintentando ni cambiando de modelo.
+                if e.status_code >= 500 and intento < MAX_REINTENTOS:
+                    time.sleep(ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1)))
+                    continue
+                return None, ultimo_error
+
+            except groq.APIConnectionError as e:
+                ultimo_error = f"Intento {intento} [{modelo}]: APIConnectionError - {e}"
+                if intento < MAX_REINTENTOS:
+                    time.sleep(ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1)))
+                    continue
+
+            except Exception as e:
+                ultimo_error = f"Intento {intento} [{modelo}]: {type(e).__name__} - {e}"
+                if _es_error_de_modelo_retirado(e):
+                    modelo_retirado = True
+                    break  # modelo muerto: probar el siguiente
+                if intento < MAX_REINTENTOS:
+                    time.sleep(ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1)))
+                    continue
+
+        # Fallo transitorio (rate limit, caída de red) tras agotar los
+        # reintentos: se devuelve el error SIN cambiar de modelo, porque
+        # el problema no es el modelo. La llamada siguiente volverá a
+        # empezar por el mismo, que es lo correcto.
+        if not modelo_retirado:
+            return None, ultimo_error
+
+        # Modelo confirmado como retirado: se avanza al siguiente de la
+        # cadena (y se recuerda para las llamadas posteriores). Si no
+        # queda ninguno, se agota aquí.
+        if _indice_modelo_activo + 1 < len(MODELOS_GROQ):
+            _indice_modelo_activo += 1
+            continue
+        break
+
+    return None, ultimo_error
+
+
 def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key: str) -> bool:
     """
     Agente verificador (Capa 3 de la estrategia híbrida) — usa Groq
@@ -74,18 +244,22 @@ def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key:
     se llama para cada noticia de cada país, para mantener bajo el
     consumo de cuota de Groq (ver _completar_con_verificacion_llm).
 
-    En caso de cualquier error de Groq (rate limit, conexión, etc.),
-    se asume que la noticia SÍ es relevante (fail-open) — es preferible
-    mostrar una noticia potencialmente dudosa que perder cobertura
-    real por un fallo transitorio del verificador.
+    POLÍTICA ANTE FALLO (fail-closed): si Groq falla incluso tras los
+    reintentos y el cambio de modelo, la noticia NO se rescata. Toda
+    candidata que llega aquí ya fue descartada por un filtro
+    determinista por un motivo concreto (menciona otro país, no calza
+    con el tema...); rescatarla sin verificación real invierte la carga
+    de la prueba. Y es justo cuando Groq está caído o saturado —como
+    pasó tras la deprecación del modelo en agosto— cuando un fail-open
+    dejaría entrar ruido de forma sistemática, en el peor momento
+    posible. Perder una noticia dudosa cuesta menos que publicar una
+    incorrecta.
 
     Returns
     -------
-    True si Groq confirma relevancia (o si hubo un error y se aplicó
-    el fail-open), False si Groq determina que no es relevante.
+    True solo si Groq confirma la relevancia explícitamente; False si la
+    niega o si el verificador no pudo ejecutarse.
     """
-    cliente = Groq(api_key=groq_api_key)
-
     prompt = (
         f"Eres un verificador estricto de relevancia temática para {pais}.\n\n"
         f"Título: {titulo}\n"
@@ -109,33 +283,30 @@ def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key:
         f"Responde ÚNICAMENTE con una palabra: SI o NO."
     )
 
-    try:
-        respuesta = cliente.chat.completions.create(
-            model=MODELO_GROQ,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_completion_tokens=10,
-        )
-        texto = (respuesta.choices[0].message.content or "").strip().upper()
-        # Coincidencia estricta: solo cuenta como "relevante" si la
-        # primera palabra de la respuesta ES "SI"/"SÍ" (ignorando
-        # puntuación final como "SI." o "SÍ,") — no basta con que la
-        # respuesta comience con la letra "S" (ej. "Sin información
-        # suficiente" empieza con S pero significa lo contrario).
-        primera_palabra = texto.split()[0].strip(".,;:!¡¿?") if texto.split() else ""
-        return primera_palabra in ("SI", "SÍ")
-    except Exception:
-        return True  # fail-open: ante error del verificador, no se descarta
+    texto, _error = _llamar_groq_con_reintentos(
+        groq_api_key, prompt, temperature=0, max_completion_tokens=10
+    )
+    if texto is None:
+        return False  # fail-closed: sin verificación real no hay rescate (ver docstring)
+
+    texto = texto.upper()
+    # Coincidencia estricta: solo cuenta como "relevante" si la
+    # primera palabra de la respuesta ES "SI"/"SÍ" (ignorando
+    # puntuación final como "SI." o "SÍ,") — no basta con que la
+    # respuesta comience con la letra "S" (ej. "Sin información
+    # suficiente" empieza con S pero significa lo contrario).
+    primera_palabra = texto.split()[0].strip(".,;:!¡¿?") if texto.split() else ""
+    return primera_palabra in ("SI", "SÍ")
 
 
 def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> Dict:
     """
-    Genera un resumen breve (2-3 frases) de una noticia usando Groq
-    (Llama 3.3 70B).
-
-    Reintenta con backoff exponencial ante errores transitorios (rate
-    limit, timeouts, errores de servidor). Si todos los intentos
-    fallan, retorna el snippet original como respaldo seguro.
+    Genera un resumen breve (2-3 frases) de una noticia usando el modelo
+    de Groq que esté activo (ver MODELOS_GROQ), a través de
+    _llamar_groq_con_reintentos: backoff exponencial ante rate limit,
+    5xx y fallos de conexión, y cambio automático de modelo si el actual
+    fue retirado. Si aun así falla todo, retorna el snippet original
+    como respaldo seguro.
 
     Returns
     -------
@@ -144,8 +315,6 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
     en la UI por defecto, pero permite diagnosticar fallas reales en vez
     de ocultarlas silenciosamente).
     """
-    cliente = Groq(api_key=groq_api_key)
-
     prompt = (
         "Eres un analista de políticas públicas. Redacta un resumen breve "
         "(máximo 3 frases, en español neutro, tono informativo y objetivo) "
@@ -167,59 +336,23 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
         "Resumen:"
     )
 
-    ultimo_error = None
+    texto, error = _llamar_groq_con_reintentos(
+        groq_api_key, prompt, temperature=0.3, max_completion_tokens=200
+    )
 
-    for intento in range(1, MAX_REINTENTOS + 1):
-        try:
-            respuesta = cliente.chat.completions.create(
-                model=MODELO_GROQ,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_completion_tokens=200,
-            )
-            texto = (respuesta.choices[0].message.content or "").strip()
-            if texto:
-                if _es_meta_explicacion(texto):
-                    # El modelo, a pesar de la instrucción, respondió explicando
-                    # que no tiene suficiente información en vez de resumir.
-                    # Red de seguridad: usamos el título como resumen, en vez
-                    # de mostrarle al usuario ese tipo de respuesta.
-                    return {"resumen": titulo, "error_detalle": None}
-                return {"resumen": texto, "error_detalle": None}
-            ultimo_error = "Groq devolvió una respuesta vacía."
-            break
+    if texto is not None:
+        if _es_meta_explicacion(texto):
+            # El modelo, a pesar de la instrucción, respondió explicando
+            # que no tiene suficiente información en vez de resumir.
+            # Red de seguridad: usamos el título como resumen, en vez
+            # de mostrarle al usuario ese tipo de respuesta.
+            return {"resumen": titulo, "error_detalle": None}
+        return {"resumen": texto, "error_detalle": None}
 
-        except groq.RateLimitError as e:
-            ultimo_error = f"Intento {intento}: RateLimitError (429) - {e}"
-            if intento < MAX_REINTENTOS:
-                time.sleep(ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1)))
-                continue
-
-        except groq.APIStatusError as e:
-            ultimo_error = f"Intento {intento}: APIStatusError {e.status_code} - {e}"
-            # 4xx distintos de 429 (key inválida, modelo no encontrado, etc.)
-            # no se arreglan reintentando — salimos del loop.
-            if e.status_code >= 500 and intento < MAX_REINTENTOS:
-                time.sleep(ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1)))
-                continue
-            break
-
-        except groq.APIConnectionError as e:
-            ultimo_error = f"Intento {intento}: APIConnectionError - {e}"
-            if intento < MAX_REINTENTOS:
-                time.sleep(ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1)))
-                continue
-
-        except Exception as e:
-            ultimo_error = f"Intento {intento}: {type(e).__name__} - {e}"
-            if intento < MAX_REINTENTOS:
-                time.sleep(ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1)))
-                continue
-
-    # Si llegamos aquí, todos los intentos fallaron.
+    # Fallaron todos los modelos e intentos: respaldo con el snippet.
     return {
         "resumen": snippet or "Resumen no disponible.",
-        "error_detalle": ultimo_error,
+        "error_detalle": error,
     }
 
 
@@ -528,7 +661,7 @@ def generar_documento_word(reportes_por_pais: List[Dict]) -> io.BytesIO:
         titulo_texto = f"Resumen de Noticias\nProgramas de Protección Social en {pais_unico}"
         nota_texto = f"Reporte individual del país: {pais_unico}."
     else:
-        titulo_texto = "Resumen de Noticias\nProgramas de Protección Social en México, Centroamérica y el Caribe"
+        titulo_texto = "Resumen de Noticias\nProgramas de Protección Social en Centroamérica y el Caribe"
         nombres = [r["pais"] for r in reportes_por_pais]
         nota_texto = f"Países incluidos: {', '.join(nombres[:-1])} y {nombres[-1]}." if len(nombres) > 1 else f"País incluido: {nombres[0]}."
 

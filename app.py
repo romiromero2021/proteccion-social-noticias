@@ -25,7 +25,7 @@ from datetime import datetime
 from cache import _ahora
 
 from scraper import buscar_noticias_pais, PAISES, TERMINOS_TEMATICOS
-from summarizer import procesar_pais, generar_documento_word
+from summarizer import procesar_pais, generar_documento_word, modelo_en_uso
 import cache
 
 
@@ -42,7 +42,7 @@ def _normalizar_nombre_archivo(texto: str) -> str:
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Noticias: Protección Social en México, Centroamérica y el Caribe",
+    page_title="Noticias: Protección Social en Centroamérica y el Caribe",
     page_icon="📰",
     layout="wide",
 )
@@ -59,7 +59,7 @@ if "reportes" not in st.session_state:
     st.session_state.reportes = {}
 
 st.title("📰 Resumen Diario de Noticias")
-st.subheader("Programas de Protección Social en México, Centroamérica y el Caribe")
+st.subheader("Programas de Protección Social en Centroamérica y el Caribe")
 
 st.markdown(
     "Esta aplicación combina dos agentes automatizados:\n"
@@ -76,8 +76,23 @@ st.markdown(
 # ---------------------------------------------------------------------------
 
 def obtener_api_key(nombre_secret: str, label: str) -> str:
-    if nombre_secret in st.secrets:
-        return st.secrets[nombre_secret]
+    """
+    Devuelve la API key desde los Secrets de Streamlit si está
+    configurada; si no, pide escribirla en el panel lateral.
+
+    El acceso a st.secrets va dentro de un try porque, cuando NO existe
+    ningún archivo de secrets (típico al clonar el repo por primera vez
+    o al correrlo en local sin configurar nada), Streamlit no devuelve
+    un diccionario vacío: lanza StreamlitSecretNotFoundError y tumba la
+    app entera con un traceback rojo, en vez de mostrar el aviso amable
+    de "ingresa tus claves". Con el try, ese caso degrada al campo de
+    texto del panel lateral, que es el comportamiento esperado.
+    """
+    try:
+        if nombre_secret in st.secrets:
+            return st.secrets[nombre_secret]
+    except Exception:
+        pass  # sin archivo de secrets: se pide la clave por pantalla
     return st.sidebar.text_input(label, type="password", key=nombre_secret)
 
 
@@ -104,6 +119,7 @@ with st.sidebar:
     st.caption(f"Países cubiertos ({len(PAISES)}):")
     st.caption(", ".join(PAISES))
     st.caption(f"Términos de búsqueda: *{', '.join(TERMINOS_TEMATICOS)}*")
+    st.caption(f"Modelo de IA en uso: `{modelo_en_uso()}`")
 
 claves_listas = bool(serpapi_key) and bool(groq_key)
 
@@ -232,8 +248,26 @@ if st.session_state.reportes:
                     st.markdown("---")
 
                 if reporte.get("errores_llm"):
+                    n_fallidos = len(reporte["errores_llm"])
+                    n_noticias = len(reporte["noticias"])
+
+                    # Si fallaron TODOS los resúmenes, no es un tropiezo
+                    # puntual sino una falla sistémica (modelo retirado,
+                    # key vencida, Groq caído). Se muestra de forma
+                    # prominente: la deprecación del modelo de agosto de
+                    # 2026 pasó un mes inadvertida justamente porque este
+                    # aviso vivía escondido dentro de un desplegable.
+                    if n_noticias > 0 and n_fallidos == n_noticias:
+                        st.error(
+                            "🔴 **Ningún resumen pudo generarse con IA.** Lo que se "
+                            "muestra arriba es el texto original de cada noticia, no un "
+                            "resumen. Suele deberse a que el modelo de Groq fue retirado, "
+                            "a que la API key venció, o a que el servicio está caído. "
+                            "Revisa el detalle técnico abajo."
+                        )
+
                     with st.expander(
-                        f"⚠️ {len(reporte['errores_llm'])} resumen(es) usaron el "
+                        f"⚠️ {n_fallidos} resumen(es) usaron el "
                         "texto original por un error de Groq — ver detalle técnico"
                     ):
                         for err in reporte["errores_llm"]:

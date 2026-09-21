@@ -55,6 +55,7 @@ No interpreta ni resume nada — esa es responsabilidad del Agente 2.
 """
 
 import re
+import time
 import requests
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
@@ -600,12 +601,29 @@ def _buscar_una_vez(
         "api_key": api_key,
     }
 
-    try:
-        resp = requests.get(SERPAPI_ENDPOINT, params=params, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.exceptions.RequestException as e:
-        return {"aceptadas": [], "descartadas_marginales": [], "error": f"Error de conexión con SerpAPI: {e}"}
+    # Reintento ante fallos transitorios de red. Confirmado en producción:
+    # República Dominicana falló con "Read timed out (read timeout=20)" y se
+    # resolvió con un simple clic en "Regenerar". Con 10 países por
+    # ejecución, ese tipo de tropiezo pasajero aparece cada tanto y dejaba
+    # al país entero sin noticias hasta que alguien lo reintentara a mano.
+    # Dos intentos con una pausa corta lo absorben solos; si el segundo
+    # también falla, el error es real y se reporta como antes.
+    data = None
+    ultimo_error_red = None
+    for intento in range(2):
+        try:
+            resp = requests.get(SERPAPI_ENDPOINT, params=params, timeout=25)
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except requests.exceptions.RequestException as e:
+            ultimo_error_red = e
+            if intento == 0:
+                time.sleep(2)
+
+    if data is None:
+        return {"aceptadas": [], "descartadas_marginales": [],
+                "error": f"Error de conexión con SerpAPI: {ultimo_error_red}"}
 
     if "error" in data:
         mensaje = data["error"]
