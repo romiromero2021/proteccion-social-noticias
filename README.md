@@ -14,16 +14,10 @@ país** para refrescar solo uno sin gastar cuota en los otros 9.
 ```
 app.py          -> Interfaz Streamlit, orquesta los dos agentes + caché
 scraper.py       -> AGENTE 1: recolecta noticias vía SerpAPI (google_news)
-cepal.py         -> Sección regional de la CEPAL (dominios, términos, query)
 summarizer.py    -> AGENTE 2: resume con Groq (GPT OSS 120B) + genera el .docx
 cache.py         -> Caché diario por país en SQLite (cache_noticias.db)
 requirements.txt -> Dependencias
 ```
-
-El reporte tiene **11 secciones**: los 10 países más una sección
-regional, `CEPAL (regional)`, con el material de la CEPAL que no
-corresponde a un país en particular (informes regionales, seminarios,
-notas comparativas).
 
 ## Cómo funciona el caché
 
@@ -107,6 +101,8 @@ pestaña de país en vez de "🆕 Recién generado".
    ```toml
    SERPAPI_KEY = "tu_key_real_de_serpapi"
    GROQ_API_KEY = "tu_key_real_de_groq"
+   # Opcional, solo si Groq devuelve 403 (ver más abajo):
+   # GROQ_BASE_URL = "https://gateway.ai.cloudflare.com/v1/<cuenta>/<pasarela>/groq"
    ```
 5. Deploy. Te dará una URL pública tipo `https://tu-app.streamlit.app`
    que puedes compartir o usar a diario.
@@ -245,63 +241,30 @@ pestaña de país en vez de "🆕 Recién generado".
   el código los absorbe con reintentos y espera progresiva (2s, 4s, 8s):
   la ejecución tarda más, pero no falla.
 
-## La sección regional de la CEPAL
+## Por qué no hay una sección de la CEPAL (y por qué no insistir)
 
-Además de la prensa nacional, el reporte tiene una sección
-`CEPAL (regional)` con lo que publica la propia CEPAL sobre el tema,
-**incluidas sus notas sobre los diez países**. Ahí una nota sobre
-Honduras no es ruido: es el contenido. Por eso, solo para esa sección,
-los filtros de país cruzado no se aplican (ver `_buscar_una_vez`);
-quedan el de fecha y el de tema.
+Se intentó y **se retiró el 29-sep-2026** tras tres aproximaciones
+fallidas. Queda escrito para que nadie lo reintente sin saber esto:
 
-Se busca con SerpAPI restringido a `cepal.org` y `dds.cepal.org`,
-así que **consume 1 búsqueda por reporte**. Con una diferencia
-importante respecto a los países: **usa la búsqueda WEB, no la
-pestaña de Noticias de Google**.
+1. **La palabra "CEPAL" como término de búsqueda.** No podía funcionar:
+   la capa 1 restringe con `site:` a prensa nacional y cepal.org no
+   cabe ahí; en la capa 2 se buscaba como frase exacta, que no aparece
+   en ningún titular.
+2. **Los feeds RSS de ReDeSoc.** Era la vía ideal —gratis, ya curada
+   por la División de Desarrollo Social—, pero **están rotos del lado
+   de la CEPAL**: `redesoc-rss.php` y `redesoc-proteccionsocial.php`
+   devuelven HTTP 500.
+3. **Búsqueda con `site:cepal.org`.** Agota el tiempo de espera de
+   SerpAPI, y no por longitud —esa consulta era la más corta de todas,
+   173 caracteres frente a los 430 de Haití— sino porque se le pedía a
+   Google *Noticias* un dominio que no indexa como prensa.
 
-Por qué. El 29-sep-2026, con `tbm=nws`, la consulta de la CEPAL agotó
-el tiempo de espera (25 s, dos intentos) mientras los 10 países
-respondían sin problema. No era cuestión de longitud: la consulta de
-la CEPAL es la **más corta** de todas, 173 caracteres frente a los 430
-de Haití. Era que se le estaba pidiendo a Google *Noticias* un dominio
-que no indexa como prensa —cepal.org es un organismo internacional, no
-un periódico—. Es la misma familia de fallo que la incidencia de
-SerpAPI del 20-sep-2026 ("requests timing out while using tbm=nws with
-advanced parameters"). Lo controla el parámetro `buscar_en_noticias`
-de `_buscar_una_vez`.
+Lo que sí funciona y sigue activo: que una noticia de prensa **mencione**
+a la CEPAL se detecta con la palabra clave `cepal` de
+`PALABRAS_CLAVE_RELEVANCIA`.
 
-Ese cambio arrastró dos ajustes más, porque los resultados web no
-vienen igual que los de Noticias:
-
-- **Fechas con el mes en letra** ("23 sept 2026", "Sep 23, 2026"). No
-  se interpretaban, y como una fecha ilegible se deja pasar por
-  defecto, el filtro de antigüedad quedaba desactivado de hecho para
-  esta sección: habrían entrado páginas de hace años. Lo resuelve
-  `_parsear_fecha_con_mes_en_letra`, en español e inglés.
-- **Nombre del medio.** Los resultados web no suelen traer el campo
-  `source`, y las notas salían como "Fuente desconocida". Ahora se
-  deduce del dominio, y las de cepal.org se etiquetan como "CEPAL". Una nota de cepal.org nunca
-aparece en la sección de un país: su dominio pertenece a esta sección.
-
-**Historia, para no repetir el camino** (`cepal.py` la documenta en
-detalle):
-
-1. *La palabra "CEPAL" en los términos de búsqueda.* No podía
-   funcionar: la capa 1 restringe con `site:` a prensa nacional y
-   cepal.org no cabe ahí; en la capa 2 se buscaba como frase exacta,
-   que no aparece en ningún titular. El término se retiró.
-2. *Los feeds RSS de ReDeSoc.* Era la vía ideal —gratis, ya curada por
-   la División de Desarrollo Social, sin gastar cuota—, pero **están
-   rotos del lado de la CEPAL**: verificado el 29-sep-2026, tanto
-   `redesoc-rss.php` como `redesoc-proteccionsocial.php` devuelven
-   error HTTP 500. El reporte de ese día salió con la sección vacía
-   por eso.
-3. *La vía actual, con SerpAPI.* Más pobre que el RSS, pero reutiliza
-   maquinaria ya probada en producción en vez de un camino propio que
-   solo falla en silencio.
-
-Si los feeds vuelven a responder conviene reconsiderarlo. La página de
-referencia es https://dds.cepal.org/redesoc/noticias.
+Si alguien quiere reintentarlo, la vía con más futuro es que los feeds
+de ReDeSoc vuelvan a responder (https://dds.cepal.org/redesoc/noticias).
 
 ## Cuando el tema está en las palabras pero no en la noticia
 
@@ -415,6 +378,66 @@ IGSS. Quedan aquí por si algún país necesita refuerzo:
 | Nicaragua | `inss.gob.ni` — `mifamilia.gob.ni` emite `noindex`, así que `site:` no lo alcanza |
 | Panamá | `css.gob.pa`, `mides.gob.pa`, `mitradel.gob.pa` |
 | Rep. Dominicana | `cnss.gob.do`, `tss.gob.do`, `gabinetesocial.gob.do`, `superate.gob.do`, `siuben.gob.do` |
+
+## Cuando Groq responde 403: bloqueo de red, no de clave
+
+**Caso real del 29-sep-2026.** De un día para otro, ningún resumen se
+generaba y el detalle técnico decía:
+
+```
+403 - {'error': {'message': 'Access denied. Please check your network settings.'}}
+```
+
+No era la clave (sería 401), ni la cuota (429), ni el modelo retirado
+(`gpt-oss-120b` sigue siendo el recomendado por Groq). **Es Cloudflare,
+que Groq tiene delante de su API, bloqueando las peticiones que salen
+de rangos de IP de centros de datos y VPN.** Streamlit Cloud es un
+centro de datos.
+
+Tres consecuencias que conviene entender:
+
+- El rechazo ocurre **antes** de comprobar la clave, así que renovarla
+  no sirve de nada.
+- **Cambiar de modelo tampoco**: ninguna petición llega al modelo. Por
+  eso la lista de respaldo `MODELOS_GROQ` no ayuda aquí, y hace bien en
+  no avanzar (un 403 no es señal de retiro).
+- **No aparecerá en groqstatus.com.** Para Groq no es una avería: es su
+  política de seguridad funcionando. No se "arregla" solo.
+
+### Qué hacer, en orden
+
+**1. Reiniciar la app.** Al reiniciar puede tocarte otra IP de salida y
+a veces basta con eso. Es gratis y tarda un minuto, así que se prueba
+primero.
+
+**2. Enrutar por una pasarela, sin tocar el código.** Si el bloqueo
+persiste, añade en Streamlit Cloud (Settings → Secrets) el secret
+opcional:
+
+```toml
+GROQ_BASE_URL = "https://gateway.ai.cloudflare.com/v1/<cuenta>/<pasarela>/groq"
+```
+
+La app lo detecta sola, lo usa en vez de la API oficial y muestra un
+aviso en el panel lateral. Sin ese secret todo sigue como siempre.
+
+Para obtener esa dirección: crear una cuenta gratuita en Cloudflare →
+AI Gateway → crear una pasarela → elegir Groq como proveedor. Cloudflare
+lo documenta en
+https://developers.cloudflare.com/ai-gateway/usage/providers/groq/ .
+Groq acepta ese tráfico por venir de un servicio suyo conocido.
+
+Advertencia honesta: la pasarela pasa a ver las claves y los textos que
+circulan. Para noticias públicas no es grave, pero conviene saberlo.
+
+**3. Si nada de lo anterior funciona**, la otra vía documentada es
+cambiar la huella TLS del cliente (con `curl_cffi`), porque parte del
+bloqueo es por *fingerprinting* y no solo por IP. Es más frágil y solo
+merece la pena si la pasarela falla.
+
+No hay procedimiento oficial de Groq para pedir el desbloqueo de un
+rango, ni dato público sobre cuánto tardan. El foro
+(community.groq.com) es la única vía de contacto identificable.
 
 ## Mantenimiento: deprecaciones de modelos de Groq
 

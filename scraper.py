@@ -20,7 +20,7 @@ Historial de correcciones:
      que no eran realmente sobre el país pedido. Se corrigió usando
      el nombre del país entre comillas y combinando varios términos
      temáticos relacionados (protección social, seguridad social,
-     CEPAL) con OR.
+     desarrollo social) con OR.
   3. Aun con comillas, Google a veces cuela noticias que solo
      mencionan el país pero no tienen relación real con el tema. Se
      agregó un filtro de relevancia en Python (_es_relevante_al_tema)
@@ -60,7 +60,6 @@ import unicodedata
 import requests
 from datetime import datetime, timedelta, timezone
 
-from cepal import SECCION_CEPAL, construir_query_cepal
 from typing import List, Dict, Optional
 from urllib.parse import urlparse
 
@@ -128,12 +127,6 @@ SITIOS_PAIS = {
     # noticia, y en la capa 1 desplazarían al periodismo por
     # comunicados —Guatemala ya salió 4 de 5 con notas del IGSS—.
     # La lista verificada está en el README por si se quiere usar.
-
-    # Sección regional de la CEPAL. Se registra aquí, junto a la prensa
-    # nacional, para que reutilice toda la maquinaria ya probada: el
-    # operador site:, el reconocimiento de "medio curado" y el descarte
-    # de una noticia de cepal.org en la sección de un país. Ver cepal.py.
-    "CEPAL (regional)": ["cepal.org", "dds.cepal.org"],
 
     "Costa Rica": [
         "nacion.com", "crhoy.com", "diarioextra.com",
@@ -364,19 +357,22 @@ TERMINOS_TEMATICOS = [
     "transferencias monetarias",
 ]
 # Nota (29-sep-2026): aquí había un sexto término, "CEPAL protección
-# social". Se retiró porque no podía funcionar y además estorbaba:
-#   - En la capa 1 la query va restringida con site: a medios de prensa
-#     nacionales. cepal.org no está en ninguna lista (es un organismo
-#     regional, no prensa de un país), así que el término nunca podía
-#     dar resultado ahí.
-#   - En la capa 2 se busca como frase exacta, y "CEPAL protección
-#     social" no aparece literalmente en ningún titular.
-#   - Cada término alarga la consulta, y las consultas largas fueron lo
-#     que se cayó en la incidencia de SerpAPI del 20-sep-2026.
-# Las noticias de la CEPAL ahora llegan por su fuente real, el feed de
-# ReDeSoc (ver cepal.py). Que una noticia de prensa MENCIONE a la CEPAL
-# se sigue detectando aparte, con la palabra clave "cepal" de
-# PALABRAS_CLAVE_RELEVANCIA.
+# social". Se retiró porque no podía funcionar: en la capa 1 la query
+# va restringida con site: a medios de prensa nacionales, y cepal.org
+# no está en ninguna lista (es un organismo regional, no prensa de un
+# país); en la capa 2 se busca como frase exacta, y "CEPAL protección
+# social" no aparece literalmente en ningún titular. Solo alargaba la
+# consulta, y las consultas largas fueron lo que se cayó en la
+# incidencia de SerpAPI del 20-sep-2026.
+#
+# Se intentó también una sección propia con el material de la CEPAL,
+# primero por los feeds RSS de ReDeSoc (devuelven error 500 del lado de
+# la CEPAL) y después por búsqueda con site:cepal.org (agota el tiempo
+# de espera de SerpAPI). Se retiró el 29-sep-2026 tras no conseguir que
+# funcionara por ninguna de las dos vías. El README lo documenta.
+#
+# Lo que SÍ sigue: que una noticia de prensa MENCIONE a la CEPAL se
+# detecta con la palabra clave "cepal" de PALABRAS_CLAVE_RELEVANCIA.
 
 # Términos temáticos en francés, exclusivos para Haití (único país
 # francófono de los 10). Sin esto, la búsqueda en español filtra de
@@ -705,9 +701,10 @@ def _parsear_fecha_serpapi(item: Dict) -> Optional[datetime]:
 
     # Caso 4: fecha con el mes en letra, "23 sept 2026" o "Sep 23, 2026".
     # Es el formato habitual de los resultados WEB (organic_results),
-    # que es lo que devuelve la sección de la CEPAL. Sin este caso, sus
-    # fechas no se interpretaban y el filtro de antigüedad las dejaba
-    # pasar todas por defecto, incluidas páginas de hace años.
+    # que es lo que llega cuando Google contesta con resultados web en
+    # vez de noticias. Sin este caso esas fechas no se interpretaban y
+    # el filtro de antigüedad las dejaba pasar todas por defecto,
+    # incluidas páginas de hace años.
     fecha_con_mes = _parsear_fecha_con_mes_en_letra(publicado)
     if fecha_con_mes is not None:
         return fecha_con_mes
@@ -966,36 +963,9 @@ def _buscar_una_vez(
     rango_tiempo: str,
     max_resultados: int,
     dias_maximos_antiguedad: int,
-    buscar_en_noticias: bool = True,
 ) -> Dict:
     """
     Ejecuta una sola consulta a SerpAPI con un rango de tiempo dado.
-
-    buscar_en_noticias : si True (por defecto) se consulta la pestaña
-        de Noticias de Google (tbm=nws); si False, la búsqueda web
-        normal, que devuelve organic_results.
-
-        Cuándo ponerlo en False: cuando el sitio que se busca NO es un
-        medio de prensa. Confirmado el 29-sep-2026 con la sección de la
-        CEPAL: `tbm=nws` + `site:cepal.org` agotó el tiempo de espera
-        (25 s, dos intentos), mientras los 10 países respondían bien.
-        No era cuestión de longitud —la consulta de la CEPAL es la más
-        CORTA de todas, 173 caracteres frente a 430 de Haití—, sino de
-        que se le estaba pidiendo a Google NOTICIAS un dominio que no
-        indexa como prensa. Es la misma familia de fallo que la
-        incidencia de SerpAPI del 20-sep-2026 ("requests timing out
-        while using tbm=nws with advanced parameters").
-
-    El filtro de FECHA se aplica de forma estricta (sin ambigüedad: una
-    noticia más vieja que el límite nunca se acepta). Los otros 4
-    filtros (relevancia temática, país cruzado por texto, TLD de
-    dominio, subdivisiones de riesgo) se usan para CLASIFICAR cada
-    noticia en "aceptada" o "descartada_marginal", en vez de eliminarla
-    de inmediato — así, si después hacen falta más noticias de las que
-    sobrevivieron, el agente verificador de Groq (ver summarizer.py)
-    puede revisar las descartadas marginales y rescatar las que
-    realmente sean relevantes, en vez de perderlas para siempre por un
-    filtro de texto que no es 100% exhaustivo.
 
     Returns
     -------
@@ -1012,10 +982,9 @@ def _buscar_una_vez(
         "gl": _codigo_pais(pais),
         "hl": idioma_busqueda,
         "tbs": rango_tiempo,
+        "tbm": "nws",
         "api_key": api_key,
     }
-    if buscar_en_noticias:
-        params["tbm"] = "nws"
 
     # Reintento ante fallos transitorios de red. Confirmado en producción:
     # República Dominicana falló con "Read timed out (read timeout=20)" y se
@@ -1087,12 +1056,7 @@ def _buscar_una_vez(
             item for item in data.get("organic_results", [])
             if item.get("date")
         ]
-        # Solo es "respaldo" —y por tanto evidencia de segunda que debe
-        # revisar el verificador— cuando se pidió la pestaña de
-        # Noticias y Google contestó con resultados web. Si la búsqueda
-        # web era justo lo que se pidió (sección de la CEPAL), sus
-        # resultados son la fuente normal, no un sucedáneo.
-        es_respaldo_web = bool(noticias_crudas) and buscar_en_noticias
+        es_respaldo_web = bool(noticias_crudas)
 
     # Filtros DUROS, sin clasificar — estas noticias jamás llegan ni
     # siquiera a descartadas_marginales, porque el verificador LLM no
@@ -1150,20 +1114,6 @@ def _buscar_una_vez(
         # menciona "El Salvador" ni "salvadoreño" por ningún lado, que es
         # justo lo que esta regla exige.
         de_medio_curado = _es_dominio_curado_del_pais(item, pais)
-
-        # La sección regional de la CEPAL no tiene país, así que los
-        # filtros de país cruzado no solo sobran: estorban. Una nota de
-        # la CEPAL sobre Honduras menciona Honduras, y eso ahí no es
-        # ruido — es exactamente el contenido que la sección debe
-        # mostrar. Solo se le aplican los filtros de fecha y de tema.
-        if pais == SECCION_CEPAL:
-            if _es_relevante_al_tema(item):
-                aceptadas.append(_convertir(item))
-            else:
-                descartadas_marginales.append(
-                    _convertir(item, motivo="tema_ausente")
-                )
-            continue
 
         sin_evidencia_de_pais = (
             not de_medio_curado
@@ -1236,7 +1186,7 @@ def _buscar_prensa_pais(
     """
     Busca noticias recientes de PRENSA para un país usando SerpAPI, con
     una estrategia en capas. El punto de entrada público es
-    buscar_noticias_pais, que además incorpora la fuente CEPAL/ReDeSoc.
+    buscar_noticias_pais.
 
     Estrategia:
 
@@ -1367,51 +1317,9 @@ def buscar_noticias_pais(
     n_noticias_necesarias: int = 5,
 ) -> Dict:
     """
-    Punto de entrada del Agente 1.
-
-    Para los 10 países: la estrategia en capas de siempre sobre la
+    Punto de entrada del Agente 1: la estrategia en capas sobre la
     prensa nacional (ver _buscar_prensa_pais).
-
-    Para la sección regional de la CEPAL (SECCION_CEPAL): una sola
-    consulta restringida a los dominios de la CEPAL, con los términos
-    temáticos de cepal.TERMINOS_CEPAL. No se usa la capa de anclas de
-    texto, que busca el nombre de un país, porque esta sección no
-    tiene país: aquí una nota sobre Honduras es contenido válido, no
-    ruido (ver la clasificación en _buscar_una_vez).
-
-    Nota histórica: esta sección se intentó primero por los feeds RSS
-    de ReDeSoc, que serían gratis y ya vienen curados por la propia
-    División de Desarrollo Social. Están rotos del lado de la CEPAL
-    —error 500, verificado el 29-sep-2026— y por eso el reporte de ese
-    día salió con la sección vacía. El detalle está en cepal.py.
     """
-    if pais == SECCION_CEPAL:
-        # Búsqueda WEB, no de Noticias: cepal.org no es un medio de
-        # prensa y pedirlo en la pestaña de Noticias agota el tiempo de
-        # espera (ver buscar_en_noticias en _buscar_una_vez).
-        resultado = _buscar_una_vez(
-            pais, api_key, construir_query_cepal(),
-            rango_tiempo, max_resultados, dias_maximos_antiguedad,
-            buscar_en_noticias=False,
-        )
-        # Igual que los países: si una semana no trae nada, se reintenta
-        # con dos semanas antes de declarar la sección vacía. La CEPAL
-        # publica con menos frecuencia que la prensa diaria, así que
-        # este respaldo le hace más falta que a nadie.
-        if resultado["error"] is None and not resultado["aceptadas"] and rango_tiempo == "qdr:w":
-            resultado_2sem = _buscar_una_vez(
-                pais, api_key, construir_query_cepal(),
-                "qdr:w2", max_resultados, dias_maximos_antiguedad=14,
-                buscar_en_noticias=False,
-            )
-            if resultado_2sem["error"] is None:
-                resultado_2sem["descartadas_marginales"] = (
-                    resultado["descartadas_marginales"]
-                    + resultado_2sem["descartadas_marginales"]
-                )
-                return resultado_2sem
-        return resultado
-
     return _buscar_prensa_pais(
         pais=pais,
         api_key=api_key,
@@ -1427,11 +1335,10 @@ def _extraer_fuente(item: Dict) -> str:
     """
     Nombre del medio. SerpAPI a veces lo anida en 'source': {'name':...}.
 
-    Los resultados WEB (organic_results), que es lo que devuelve la
-    sección de la CEPAL, con frecuencia no traen 'source'. Antes eso
-    salía en el reporte como "Fuente desconocida", que para una nota de
-    la propia CEPAL queda muy mal. Ahora, si falta, se deduce del
-    dominio del enlace.
+    Los resultados WEB (organic_results), que es lo que llega cuando
+    Google contesta con resultados web en vez de noticias, con
+    frecuencia no traen 'source' y salían en el reporte como "Fuente
+    desconocida". Si falta, se deduce del dominio del enlace.
     """
     source = item.get("source")
     if isinstance(source, dict) and source.get("name"):
@@ -1443,8 +1350,6 @@ def _extraer_fuente(item: Dict) -> str:
     dominio = urlparse(link).netloc.lower()
     if dominio.startswith("www."):
         dominio = dominio[4:]
-    if dominio.endswith("cepal.org"):
-        return "CEPAL"
     return dominio or "Fuente desconocida"
 
 

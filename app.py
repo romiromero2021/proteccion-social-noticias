@@ -26,15 +26,8 @@ from datetime import datetime
 from cache import _ahora
 
 from scraper import buscar_noticias_pais, PAISES, TERMINOS_TEMATICOS
-from cepal import SECCION_CEPAL, URL_REDESOC
-
-# Secciones del reporte = los 10 países + la sección regional de la
-# CEPAL. Se mantiene PAISES aparte porque sigue siendo la lista de
-# países monitoreados (es lo que se muestra en el panel lateral y lo
-# que usan los filtros del scraper); SECCIONES es lo que se recorre
-# para procesar, mostrar pestañas y armar el documento.
-SECCIONES = PAISES + [SECCION_CEPAL]
-from summarizer import procesar_pais, generar_documento_word, modelo_en_uso
+from summarizer import (procesar_pais, generar_documento_word, modelo_en_uso,
+                        configurar_base_url, es_error_de_bloqueo_de_red)
 import cache
 
 
@@ -44,9 +37,9 @@ def _normalizar_nombre_archivo(texto: str) -> str:
     sin_tildes = unicodedata.normalize("NFKD", texto)
     sin_tildes = "".join(c for c in sin_tildes if not unicodedata.combining(c))
     # Cualquier cosa que no sea letra o número pasa a guion bajo. Antes
-    # solo se sustituían los espacios, y con la sección "CEPAL
-    # (regional)" salía el archivo "reporte_cepal_(regional)_...docx":
-    # los paréntesis son legales pero molestan al compartir el archivo.
+    # solo se sustituían los espacios, así que paréntesis y otros
+    # signos del nombre acababan dentro del archivo — legales, pero
+    # molestos al compartirlo.
     limpio = re.sub(r"[^a-z0-9]+", "_", sin_tildes.lower())
     return limpio.strip("_")
 
@@ -115,6 +108,19 @@ with st.sidebar:
     serpapi_key = obtener_api_key("SERPAPI_KEY", "SerpAPI Key")
     groq_key = obtener_api_key("GROQ_API_KEY", "Groq API Key")
 
+    # Pasarela alternativa hacia Groq. Secret OPCIONAL: si no está, se
+    # usa la API oficial y todo funciona como siempre. Existe porque el
+    # Cloudflare de Groq bloquea las IP de centros de datos —Streamlit
+    # Cloud entre ellos— con un 403 antes de mirar la clave. Ver
+    # summarizer._BASE_URL_GROQ y el README.
+    try:
+        _base_url_groq = st.secrets.get("GROQ_BASE_URL", "")
+    except Exception:
+        _base_url_groq = ""
+    configurar_base_url(_base_url_groq)
+    if _base_url_groq:
+        st.caption("🔀 Groq se está consultando a través de una pasarela alternativa.")
+
     st.divider()
     n_noticias = st.slider("Noticias por país", min_value=1, max_value=5, value=5)
 
@@ -132,13 +138,6 @@ with st.sidebar:
     st.divider()
     st.caption(f"Países cubiertos ({len(PAISES)}):")
     st.caption(", ".join(PAISES))
-    st.caption(
-        f"Sección regional adicional: **{SECCION_CEPAL}** — recoge lo que "
-        "publica la propia CEPAL sobre el tema, incluidas sus notas sobre "
-        "los diez países. Se busca restringida a cepal.org y consume "
-        "1 búsqueda por reporte. Referencia: "
-        f"[ReDeSoc]({URL_REDESOC})."
-    )
     st.caption(f"Términos de búsqueda: *{', '.join(TERMINOS_TEMATICOS)}*")
     st.caption(f"Modelo de IA en uso: `{modelo_en_uso()}`")
 
@@ -230,8 +229,8 @@ DATOS_MIENTRAS_ESPERAS = [
     "Si un país no tuvo cobertura esta semana, el reporte lo va a decir. Nunca rellena "
     "el hueco con algo que no venga al caso.",
 
-    "La sección de la CEPAL se lee del boletín de ReDeSoc por RSS, no por Google. "
-    "Por eso no consume cuota de búsqueda.",
+    "Si una noticia aparece en dos búsquedas distintas con enlaces distintos, se "
+    "detecta que es la misma por el parecido entre los titulares y solo se incluye una vez.",
 
     "Google fecha por rastreo las páginas que no llevan fecha propia, y así reporta "
     "material viejo como reciente. Por eso también se lee la fecha incrustada en el enlace.",
@@ -258,7 +257,7 @@ def _mmss(segundos: float) -> str:
 if ejecutar_todos:
     import time as _time
 
-    total = len(SECCIONES)
+    total = len(PAISES)
     inicio = _time.monotonic()
 
     barra = st.progress(0.0, text="Iniciando…")
@@ -309,7 +308,7 @@ if ejecutar_todos:
             estado["dato"] = (estado["dato"] + 1) % len(DATOS_MIENTRAS_ESPERAS)
         linea_dato.info(f"💡 {DATOS_MIENTRAS_ESPERAS[estado['dato']]}")
 
-    for i, pais in enumerate(SECCIONES):
+    for i, pais in enumerate(PAISES):
         def _cb(etapa, hecho, de, _p=pais, _i=i + 1):
             _pintar(_p, _i, etapa, hecho, de)
             estado["pasos"] += 1
@@ -374,9 +373,9 @@ if st.session_state.reportes:
         "de un país específico sin afectar a los demás."
     )
 
-    tabs = st.tabs(SECCIONES)
+    tabs = st.tabs(PAISES)
 
-    for tab, pais in zip(tabs, SECCIONES):
+    for tab, pais in zip(tabs, PAISES):
         with tab:
             reporte = st.session_state.reportes.get(pais)
 
@@ -430,13 +429,40 @@ if st.session_state.reportes:
                     # 2026 pasó un mes inadvertida justamente porque este
                     # aviso vivía escondido dentro de un desplegable.
                     if n_noticias > 0 and n_fallidos == n_noticias:
-                        st.error(
-                            "🔴 **Ningún resumen pudo generarse con IA.** Lo que se "
-                            "muestra arriba es el texto original de cada noticia, no un "
-                            "resumen. Suele deberse a que el modelo de Groq fue retirado, "
-                            "a que la API key venció, o a que el servicio está caído. "
-                            "Revisa el detalle técnico abajo."
+                        # El aviso distingue la causa. Antes decía
+                        # siempre "modelo retirado / key vencida /
+                        # servicio caído", y el 29-sep-2026 mandó a
+                        # revisar tres cosas que estaban bien: el fallo
+                        # real era que Cloudflare bloqueaba la IP de
+                        # Streamlit Cloud antes de mirar la clave.
+                        hay_bloqueo_de_red = any(
+                            es_error_de_bloqueo_de_red(e)
+                            for e in reporte.get("errores_llm", [])
                         )
+                        if hay_bloqueo_de_red:
+                            st.error(
+                                "🔴 **Groq está rechazando las peticiones por la RED, "
+                                "no por la clave.** Lo que se muestra arriba es el texto "
+                                "original de cada noticia, no un resumen.\n\n"
+                                "El error 403 *\"Access denied — check your network "
+                                "settings\"* lo devuelve el Cloudflare que Groq tiene "
+                                "delante, **antes** de comprobar la API key, porque "
+                                "bloquea las IP de centros de datos y Streamlit Cloud "
+                                "es uno. Tu clave y tu cuota están bien, y cambiar de "
+                                "modelo no ayuda.\n\n"
+                                "**Qué hacer:** primero reinicia la app (puede tocarte "
+                                "otra IP de salida). Si sigue igual, hay que enrutar por "
+                                "una pasarela añadiendo el secret `GROQ_BASE_URL` — el "
+                                "README explica cómo, y no requiere tocar el código."
+                            )
+                        else:
+                            st.error(
+                                "🔴 **Ningún resumen pudo generarse con IA.** Lo que se "
+                                "muestra arriba es el texto original de cada noticia, no un "
+                                "resumen. Suele deberse a que el modelo de Groq fue retirado, "
+                                "a que la API key venció, o a que el servicio está caído. "
+                                "Revisa el detalle técnico abajo."
+                            )
 
                     with st.expander(
                         f"⚠️ {n_fallidos} resumen(es) usaron el "
@@ -450,8 +476,8 @@ if st.session_state.reportes:
     # ya sea de caché o recién generados)
     # -----------------------------------------------------------------
     st.divider()
-    paises_listos = [p for p in SECCIONES if st.session_state.reportes.get(p) is not None]
-    paises_faltantes = [p for p in SECCIONES if p not in paises_listos]
+    paises_listos = [p for p in PAISES if st.session_state.reportes.get(p) is not None]
+    paises_faltantes = [p for p in PAISES if p not in paises_listos]
 
     if paises_faltantes:
         st.warning(
@@ -478,7 +504,7 @@ if st.session_state.reportes:
     if reportes_para_docx:
         docx_buffer = generar_documento_word(reportes_para_docx)
         st.download_button(
-            label=f"⬇️ Descargar documento Word ({len(paises_listos)}/{len(SECCIONES)} secciones)",
+            label=f"⬇️ Descargar documento Word ({len(paises_listos)}/{len(PAISES)} países)",
             data=docx_buffer,
             file_name=f"reporte_proteccion_social_{fecha_hoy}.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

@@ -84,6 +84,62 @@ ESPERA_BASE_SEGUNDOS = 2  # backoff exponencial: 2s, 4s, 8s
 ESPERA_ENTRE_LLAMADAS_SEGUNDOS = 3.5
 
 
+# Dirección alternativa de la API de Groq. Normalmente vacía: se usa
+# la oficial (api.groq.com).
+#
+# PARA QUÉ SIRVE (caso real del 29-sep-2026): Groq tiene delante un
+# Cloudflare que BLOQUEA las peticiones que salen de rangos de IP de
+# centros de datos y VPN. Como Streamlit Cloud es un centro de datos,
+# un buen día la app empezó a recibir:
+#
+#     403 - {'error': {'message': 'Access denied. Please check your
+#            network settings.'}}
+#
+# El rechazo ocurre en el borde, ANTES de comprobar la clave, así que
+# no es un problema de credenciales ni de cuota, y cambiar de modelo no
+# ayuda: ninguna petición llega al modelo. Groq tampoco lo trata como
+# incidencia —para ellos la política de seguridad está funcionando—,
+# así que no aparece en su página de estado ni se "arregla" solo.
+#
+# La salida práctica es enrutar por una pasarela que Groq sí acepte,
+# como Cloudflare AI Gateway. Se hace SIN TOCAR EL CÓDIGO: basta añadir
+# en los secrets de Streamlit
+#
+#     GROQ_BASE_URL = "https://gateway.ai.cloudflare.com/v1/<cuenta>/<pasarela>/groq"
+#
+# El README explica el procedimiento completo.
+_BASE_URL_GROQ = ""
+
+
+def configurar_base_url(base_url: str) -> None:
+    """Fija la dirección alternativa de la API (ver _BASE_URL_GROQ)."""
+    global _BASE_URL_GROQ
+    _BASE_URL_GROQ = (base_url or "").strip()
+
+
+def _opciones_cliente() -> Dict:
+    return {"base_url": _BASE_URL_GROQ} if _BASE_URL_GROQ else {}
+
+
+# Señales de que la petición fue rechazada por la RED, no por la clave,
+# la cuota ni el modelo. Sirven para que el aviso de la app diga la
+# verdad en vez de mandar a revisar cosas que están bien.
+_SENALES_BLOQUEO_DE_RED = (
+    "access denied",
+    "check your network",
+    "403",
+    "forbidden",
+)
+
+
+def es_error_de_bloqueo_de_red(detalle: str) -> bool:
+    """True si el texto del error apunta a un bloqueo de red de Groq."""
+    texto = (detalle or "").lower()
+    if "access denied" in texto or "check your network" in texto:
+        return True
+    return "403" in texto and ("forbidden" in texto or "denied" in texto)
+
+
 def modelo_en_uso() -> str:
     """Nombre del modelo de Groq que la app está usando en este momento."""
     return MODELOS_GROQ[_indice_modelo_activo]
@@ -167,7 +223,7 @@ def _llamar_groq_con_reintentos(
 
         for intento in range(1, MAX_REINTENTOS + 1):
             try:
-                cliente = Groq(api_key=groq_api_key)
+                cliente = Groq(api_key=groq_api_key, **_opciones_cliente())
 
                 # Los modelos gpt-oss son de RAZONAMIENTO: antes de
                 # responder generan tokens de pensamiento interno que
@@ -245,22 +301,6 @@ def _llamar_groq_con_reintentos(
     return None, ultimo_error
 
 
-def _ambito_geografico(pais: str) -> str:
-    """
-    Traduce el nombre de una sección del reporte al ámbito geográfico
-    que hay que nombrar dentro de un prompt.
-
-    Casi siempre son lo mismo. La excepción es la sección regional de
-    la CEPAL, cuyo título ("CEPAL (regional)") es el nombre de una
-    sección, no de un lugar: pedirle al modelo que resuma "una noticia
-    de CEPAL (regional)" produce redacciones raras y verificaciones sin
-    sentido. Para esa sección el ámbito real es la región entera.
-    """
-    if pais.strip().upper().startswith("CEPAL"):
-        return "América Latina y el Caribe"
-    return pais
-
-
 def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key: str) -> bool:
     """
     Agente verificador (Capa 3 de la estrategia híbrida) — usa Groq
@@ -290,18 +330,17 @@ def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key:
     True solo si Groq confirma la relevancia explícitamente; False si la
     niega o si el verificador no pudo ejecutarse.
     """
-    ambito = _ambito_geografico(pais)
     prompt = (
-        f"Eres un verificador estricto de relevancia temática para {ambito}.\n\n"
+        f"Eres un verificador estricto de relevancia temática para {pais}.\n\n"
         f"Título: {titulo}\n"
         f"Extracto: {snippet}\n\n"
         f"Pregunta: ¿Esta noticia trata genuinamente sobre programas, "
         f"políticas o instituciones PÚBLICAS de protección social, "
         f"seguridad social, asistencia social o desarrollo social "
-        f"DE {ambito}?\n\n"
+        f"DE {pais}?\n\n"
         f"Responde NO si se cumple cualquiera de estos casos:\n"
         f"- La noticia es de otro país o sobre otro país (aunque el "
-        f"evento ocurra físicamente en {ambito}).\n"
+        f"evento ocurra físicamente en {pais}).\n"
         f"- Es caridad puntual, donaciones o colectas de entidades "
         f"privadas (empresas, clubes, fundaciones, iglesias), no un "
         f"programa o política pública de protección social.\n"
@@ -332,7 +371,7 @@ def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key:
         f"lugar, que está en otro país. Ejemplos: \"Villa El Salvador\" "
         f"es un distrito de Lima, Perú; \"Nuevo México\" es un estado de "
         f"Estados Unidos; \"Panama City\" está en Florida. Un topónimo "
-        f"así NO hace que la noticia sea de {ambito}. Fíjate en pistas "
+        f"así NO hace que la noticia sea de {pais}. Fíjate en pistas "
         f"como la moneda, las instituciones citadas y las ciudades "
         f"mencionadas para saber de qué país es realmente.\n\n"
         f"Responde ÚNICAMENTE con una palabra: SI o NO."
@@ -370,12 +409,11 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
     en la UI por defecto, pero permite diagnosticar fallas reales en vez
     de ocultarlas silenciosamente).
     """
-    ambito = _ambito_geografico(pais)
     prompt = (
         "Eres un analista de políticas públicas. Redacta un resumen breve "
         "(máximo 3 frases, en español neutro, tono informativo y objetivo) "
         "de la siguiente noticia sobre programas de protección social en "
-        f"{ambito}.\n\n"
+        f"{pais}.\n\n"
         f"Título: {titulo}\n"
         f"Extracto original: {snippet}\n\n"
         "Instrucciones importantes:\n"
@@ -666,22 +704,10 @@ def _agregar_pais(doc: Document, datos_pais: Dict):
 
     if datos_pais["sin_resultados"]:
         p = doc.add_paragraph()
-        # El texto se adapta a la sección: "este país" era incorrecto
-        # en la sección regional de la CEPAL, que no es un país.
-        es_seccion_cepal = pais.strip().upper().startswith("CEPAL")
         if datos_pais.get("error_busqueda"):
-            sujeto = "esta sección" if es_seccion_cepal else "este país"
             texto_vacio = (
-                f"No se pudo consultar {sujeto} por un error técnico: "
+                f"No se pudo consultar este país por un error técnico: "
                 f"{datos_pais['error_busqueda']}"
-            )
-        elif es_seccion_cepal:
-            texto_vacio = (
-                "La CEPAL no publicó material sobre protección social "
-                "en las últimas dos semanas, o su sitio no estaba "
-                "indexado al momento de la consulta. Esta sección "
-                "recoge lo que publica la propia CEPAL —incluidas sus "
-                "notas sobre los diez países—, no la prensa nacional."
             )
         else:
             texto_vacio = (
