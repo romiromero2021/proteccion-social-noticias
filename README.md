@@ -14,7 +14,7 @@ país** para refrescar solo uno sin gastar cuota en los otros 9.
 ```
 app.py          -> Interfaz Streamlit, orquesta los dos agentes + caché
 scraper.py       -> AGENTE 1: recolecta noticias vía SerpAPI (google_news)
-cepal.py         -> FUENTE DIRECTA: feed RSS de ReDeSoc (CEPAL), sin cuota
+cepal.py         -> Sección regional de la CEPAL (dominios, términos, query)
 summarizer.py    -> AGENTE 2: resume con Groq (GPT OSS 120B) + genera el .docx
 cache.py         -> Caché diario por país en SQLite (cache_noticias.db)
 requirements.txt -> Dependencias
@@ -245,51 +245,152 @@ pestaña de país en vez de "🆕 Recién generado".
   el código los absorbe con reintentos y espera progresiva (2s, 4s, 8s):
   la ejecución tarda más, pero no falla.
 
-## La fuente CEPAL / ReDeSoc
+## La sección regional de la CEPAL
 
-Además de la prensa nacional, el reporte lee directamente el boletín de
-la **Red de Desarrollo Social de América Latina y el Caribe (ReDeSoc)**,
-de la División de Desarrollo Social de la CEPAL:
-https://dds.cepal.org/redesoc/noticias
+Además de la prensa nacional, el reporte tiene una sección
+`CEPAL (regional)` con lo que publica la propia CEPAL sobre el tema,
+**incluidas sus notas sobre los diez países**. Ahí una nota sobre
+Honduras no es ruido: es el contenido. Por eso, solo para esa sección,
+los filtros de país cruzado no se aplican (ver `_buscar_una_vez`);
+quedan el de fecha y el de tema.
 
-Se lee por **RSS** (`cepal.py`), no por Google, así que:
+Se busca con SerpAPI restringido a `cepal.org` y `dds.cepal.org`,
+igual que se hace con los medios curados de cada país, así que
+**consume 1 búsqueda por reporte**. Una nota de cepal.org nunca
+aparece en la sección de un país: su dominio pertenece a esta sección.
 
-- **no consume cuota de SerpAPI** — la sección regional es gratis;
-- sus noticias **encabezan** la sección de cada país, con un tope de 2
-  (`MAX_NOTICIAS_CEPAL_POR_PAIS`) para que no desplacen a la prensa
-  nacional, que es el objeto del monitoreo;
-- si SerpAPI falla para un país pero ReDeSoc respondió, ese país ya no
-  queda vacío.
+**Historia, para no repetir el camino** (`cepal.py` la documenta en
+detalle):
 
-**Por qué no bastaba poner "CEPAL" en los términos de búsqueda.** Hasta
-el 29-sep-2026 la palabra estaba en dos sitios y ninguno podía traer
-contenido de la CEPAL:
+1. *La palabra "CEPAL" en los términos de búsqueda.* No podía
+   funcionar: la capa 1 restringe con `site:` a prensa nacional y
+   cepal.org no cabe ahí; en la capa 2 se buscaba como frase exacta,
+   que no aparece en ningún titular. El término se retiró.
+2. *Los feeds RSS de ReDeSoc.* Era la vía ideal —gratis, ya curada por
+   la División de Desarrollo Social, sin gastar cuota—, pero **están
+   rotos del lado de la CEPAL**: verificado el 29-sep-2026, tanto
+   `redesoc-rss.php` como `redesoc-proteccionsocial.php` devuelven
+   error HTTP 500. El reporte de ese día salió con la sección vacía
+   por eso.
+3. *La vía actual, con SerpAPI.* Más pobre que el RSS, pero reutiliza
+   maquinaria ya probada en producción en vez de un camino propio que
+   solo falla en silencio.
 
-1. Como término de búsqueda (`"CEPAL protección social"`): la capa 1
-   restringe con `site:` a medios de prensa nacionales y cepal.org no
-   está —ni puede estar— en la lista de ningún país, porque es un
-   organismo regional. En la capa 2 se buscaba como frase exacta, que
-   no aparece literalmente en ningún titular. El término se retiró.
-2. Como palabra clave de relevancia (`"cepal"` en
-   `PALABRAS_CLAVE_RELEVANCIA`): eso hace que una noticia de prensa que
-   *mencione* a la CEPAL pase el filtro temático. Sigue ahí, y es útil,
-   pero es otra cosa.
+Si los feeds vuelven a responder conviene reconsiderarlo. La página de
+referencia es https://dds.cepal.org/redesoc/noticias.
 
-A esto se suma que la búsqueda usa la pestaña de Noticias de Google
-(`tbm=nws`), que indexa medios de prensa: las páginas institucionales de
-la CEPAL no son prensa y muchas no llevan fecha propia.
+## Cuando el tema está en las palabras pero no en la noticia
 
-**Si el feed cambia de dirección**, las URLs están en `FEEDS_REDESOC`
-(`cepal.py`) y se verifican en la página de ReDeSoc enlazada arriba.
-Para comprobar que responde, sin tocar la app:
+Dos casos confirmados el 29-sep-2026, con causas distintas:
 
-```bash
-python3 cepal.py
-```
+**El acto ceremonial.** "Celebra IMSS Veracruz Norte Fiestas Patrias
+2026 en Centro de Seguridad Social Xalapa" pasó todos los filtros con
+holgura, porque "seguridad social" e "IMSS" están literalmente en el
+titular. Y lo están: es el nombre del lugar y el de la institución que
+organiza la fiesta. `_es_evento_ceremonial` detecta ahora los actos
+festivos, ceremoniales y deportivos en el TÍTULO
+(`EVENTOS_CEREMONIALES`) y manda la noticia al verificador en vez de
+aceptarla directo. No se descarta en duro: hay actos que sí son
+noticia del tema —la firma de un convenio en un acto público—, y esa
+distinción necesita criterio.
 
-Si el feed no responde, la app se comporta exactamente como antes:
-entrega la prensa nacional y la sección regional queda vacía. Esa
-fuente **nunca puede hacer fallar un reporte**.
+**La cola del verificador.** "Instituciones que persiguen el crimen
+priorizan desalojos frente a otros delitos" entró en Honduras sin
+tener ni una palabra del tema. Había quedado marginal por
+`tema_ausente`, y el verificador la revisó para llenar el quinto hueco
+y dijo que sí.
+
+La corrección es de orden, no de exclusión. Cada descarte marginal
+lleva ahora registrado su motivo (`_motivo_marginal`), y el
+verificador las revisa según `PRIORIDAD_MOTIVO_MARGINAL`: **las
+dudosas por país primero, las que no tienen ni una palabra del tema al
+final de la cola**. El verificador juzga bien el país —esa pregunta es
+objetiva— pero ha demostrado ser demasiado generoso con el tema. Al
+prompt se le añadieron además las dos exclusiones explícitas:
+seguridad pública no es seguridad social, y que un acto ocurra en un
+"Centro de Seguridad Social" no convierte la fiesta en noticia.
+
+**Efecto secundario deseado:** el sistema ahora prefiere entregar
+cuatro noticias buenas antes que cinco con una mala. La presión por
+llenar el cupo era la causa de fondo.
+
+## Páginas de listado que no son noticias
+
+En Nicaragua entraron dos entradas tituladas "Vienicsa" y
+"Económicas": no eran notas, sino la página de una etiqueta de La
+Prensa y el listado de la sección Económicas de El 19 Digital.
+`_es_pagina_indice` las detecta por la ruta de la URL (`/tag/`,
+`/vertodos/`, `/seccion/`, `?page=`…) o porque el título tiene una o
+dos palabras — ningún titular real se resume en dos palabras, pero los
+nombres de sección sí. Es un descarte duro.
+
+## Mantenimiento: las listas de medios
+
+`SITIOS_PAIS` en `scraper.py` es el corazón del sistema: un medio que
+no está en la lista de su país no puede aparecer en su sección.
+
+**Revisión completa con verificación por búsqueda: 29-sep-2026.** Se
+comprobó dominio por dominio que existe, que la grafía es correcta y
+que el medio sigue publicando. Lo que apareció:
+
+- **`republica.gt` estaba muerto.** Redirige a `republica.com/usa`, así
+  que una de las cinco entradas de Guatemala llevaba tiempo sin
+  devolver nada. Retirado.
+- **`elmundo.sv` y `diario.elmundo.sv` eran la misma cosa.** Se deja
+  solo `elmundo.sv`: el operador `site:` y el código hacen match por
+  subdominio, así que cubre los dos.
+- **La lista de Cuba era toda de medios del exilio.** Faltaba la prensa
+  oficial publicada desde Cuba —Granma, Cubadebate, Trabajadores—, que
+  es justamente la que informa de los pagos a jubilados y las
+  resoluciones del MTSS. Sin ella, la sección de Cuba solo veía el tema
+  desde fuera.
+- **Haití**, el país con peor cobertura histórica, tenía cinco medios y
+  uno (`loophaiti.com`) sin publicaciones verificables desde 2020. Se
+  retiró y se añadieron cinco medios francófonos, entre ellos
+  `lenational.org`, que cubrió el foro del ONA sobre pensiones.
+- Varios medios que ya venían aportando noticias **por la capa 2**
+  —`criterio.hn`, `proceso.hn`, `elmundo.cr`, `juno7.ht`,
+  `divergentes.com`, `grupoanimal.mx`— no estaban en la capa 1. Ahora
+  sí, que es más barato y más preciso.
+- `animalpolitico.com` redirige a `grupoanimal.mx`; se usa el segundo.
+- `lateja.cr` (sucesos y deportes) y `periodicocubano.com` se retiraron
+  para dejar sitio sin alargar de más la consulta.
+
+**Criterios al añadir un medio:**
+
+1. Diarios nacionales, medios económicos y medios de investigación de
+   alcance nacional. **Nunca medios locales o estatales** — son la
+   causa de las notas de Veracruz, Coahuila y Quintana Roo que se
+   colaron en reportes anteriores.
+2. **Unos 8 dominios por país como tope.** Cada dominio alarga la
+   consulta, y las consultas largas con `site:` fueron lo que falló en
+   la incidencia de SerpAPI del 20-sep-2026. Hoy las consultas van de
+   270 a 430 caracteres (Haití es la más larga, por el vocabulario
+   francés). Si vuelven los tiempos de espera agotados, este es el
+   primer sitio donde mirar.
+3. Verificar el dominio con una búsqueda antes de añadirlo. Dos de las
+   sorpresas de esta revisión fueron dominios que parecían obvios y
+   estaban mal.
+
+### Sitios institucionales (reserva, no están en uso)
+
+Se verificaron pero **se dejaron fuera a propósito**: ya llegan por la
+capa de anclas cuando son noticia, y en la capa 1 desplazarían al
+periodismo por comunicados — Guatemala ya salió 4 de 5 con notas del
+IGSS. Quedan aquí por si algún país necesita refuerzo:
+
+| País | Dominios verificados |
+|---|---|
+| Costa Rica | `ccss.sa.cr`, `imas.go.cr`, `supen.fi.cr`, `fodesaf.go.cr`, `mtss.go.cr` |
+| Cuba | `mtss.gob.cu` (el INASS fue disuelto y absorbido por el MTSS) |
+| El Salvador | `isss.gob.sv`, `pensiones.gob.sv` (ISP), `mtps.gob.sv`, `mindel.gob.sv` |
+| Guatemala | `igssgt.org`, `mides.gob.gt`, `mintrabajo.gob.gt` |
+| Haití | `ona.ht` (no `ona.gouv.ht`), `ofatma.gouv.ht`, `faes.gouv.ht`, `communication.gouv.ht` (comunicados del MAST) |
+| Honduras | `ihss.hn`, `sedesol.gob.hn`, `injupemp.gob.hn`, `inprema.gob.hn` |
+| México | `imss.gob.mx`, `bienestar.gob.mx`, `coneval.org.mx` (los comunicados están en `.org.mx`, no en `.gob.mx`) |
+| Nicaragua | `inss.gob.ni` — `mifamilia.gob.ni` emite `noindex`, así que `site:` no lo alcanza |
+| Panamá | `css.gob.pa`, `mides.gob.pa`, `mitradel.gob.pa` |
+| Rep. Dominicana | `cnss.gob.do`, `tss.gob.do`, `gabinetesocial.gob.do`, `superate.gob.do`, `siuben.gob.do` |
 
 ## Mantenimiento: deprecaciones de modelos de Groq
 

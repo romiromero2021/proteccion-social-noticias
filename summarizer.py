@@ -13,7 +13,7 @@ import io
 import time
 from datetime import datetime
 from cache import ZONA_HORARIA
-from scraper import deduplicar_noticias, titulos_similares
+from scraper import deduplicar_noticias, ordenar_marginales, titulos_similares
 from typing import List, Dict
 
 import groq
@@ -309,6 +309,16 @@ def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key:
         f"país (ej. migrantes o familias de otra nacionalidad).\n"
         f"- Es sobre loterías, sorteos, deportes, farándula o política "
         f"general sin relación directa con estos programas.\n"
+        # Los dos casos que el verificador dejó pasar el 29-sep-2026.
+        f"- Es sobre delincuencia, justicia penal, desalojos, "
+        f"operativos policiales o seguridad pública. \"Seguridad "
+        f"pública\" NO es \"seguridad social\".\n"
+        f"- Es la cobertura de un acto festivo, ceremonial o deportivo "
+        f"(fiestas patrias, aniversarios, desfiles, misas, torneos) en "
+        f"el que la institución de protección social solo pone la sede "
+        f"o la organización. Que el acto ocurra en un \"Centro de "
+        f"Seguridad Social\" no convierte la fiesta en noticia de "
+        f"protección social.\n"
         f"- Solo menciona una institución de protección social de "
         f"forma tangencial, sin que sea el tema central.\n"
         # Regla añadida el 29-sep-2026. Una nota peruana sobre "Villa El
@@ -447,9 +457,21 @@ def _completar_con_verificacion_llm(
 
     Esto mantiene el costo de Groq bajo en el caso común y solo lo
     activa cuando realmente hace falta completar el cupo de noticias.
+
+    Las candidatas se revisan EN ORDEN DE RESCATABILIDAD, no en el
+    orden en que llegaron (ver scraper.ordenar_marginales). Motivo
+    confirmado el 29-sep-2026: el reporte de Honduras incluyó
+    "Instituciones que persiguen el crimen priorizan desalojos frente
+    a otros delitos" —una nota de seguridad y justicia, sin ninguna
+    palabra del tema— porque quedó marginal por "tema_ausente", el
+    verificador la revisó para llenar el quinto hueco y respondió que
+    sí. Ahora las dudosas por país se ofrecen primero y las que no
+    tienen ni una palabra del tema quedan al final de la cola.
     """
     if len(aceptadas) >= n_necesarias:
         return aceptadas[:n_necesarias]
+
+    descartadas_marginales = ordenar_marginales(descartadas_marginales)
 
     resultado = list(aceptadas)
     links_ya_incluidos = {n["link"] for n in resultado if n.get("link")}
@@ -493,6 +515,7 @@ def procesar_pais(
     resultado_busqueda: Dict,
     groq_api_key: str,
     n_noticias: int = 5,
+    progress_callback=None,
 ) -> Dict:
     """
     Para un país: completa el cupo de noticias (usando el agente
@@ -502,6 +525,16 @@ def procesar_pais(
     ----------
     resultado_busqueda : el dict devuelto por scraper.buscar_noticias_pais,
                 con keys "aceptadas", "descartadas_marginales", "error".
+    progress_callback : función opcional progress_callback(etapa, hecho,
+                total) que se llama antes de cada paso lento, para que la
+                interfaz pueda mostrar avance real.
+
+                Sin esto, un país tarda ~30 segundos en los que la barra
+                de progreso no se mueve ni una vez, y la app parece
+                colgada. El cuello de botella no es la búsqueda sino los
+                resúmenes: son 5 llamadas a Groq espaciadas 3,5 segundos
+                por el límite de tokens por minuto. Avisando de cada una,
+                la barra avanza cada ~4 segundos en vez de cada 30.
 
     Returns
     -------
@@ -512,6 +545,8 @@ def procesar_pais(
     descartadas = resultado_busqueda.get("descartadas_marginales", [])
 
     necesito_verificador = len(aceptadas) < n_noticias
+    if necesito_verificador and progress_callback:
+        progress_callback("verificando", 0, n_noticias)
     top = _completar_con_verificacion_llm(aceptadas, descartadas, n_noticias, pais, groq_api_key)
 
     if not top:
@@ -520,6 +555,8 @@ def procesar_pais(
     procesadas = []
     errores_llm = []
     for i, noticia in enumerate(top):
+        if progress_callback:
+            progress_callback("resumiendo", i, len(top))
         if i > 0 or necesito_verificador:
             # Pequeña pausa entre llamadas consecutivas para repartir el
             # volumen dentro del límite de 30 solicitudes/minuto de Groq.
@@ -629,10 +666,22 @@ def _agregar_pais(doc: Document, datos_pais: Dict):
 
     if datos_pais["sin_resultados"]:
         p = doc.add_paragraph()
+        # El texto se adapta a la sección: "este país" era incorrecto
+        # en la sección regional de la CEPAL, que no es un país.
+        es_seccion_cepal = pais.strip().upper().startswith("CEPAL")
         if datos_pais.get("error_busqueda"):
+            sujeto = "esta sección" if es_seccion_cepal else "este país"
             texto_vacio = (
-                f"No se pudo consultar este país por un error técnico: "
+                f"No se pudo consultar {sujeto} por un error técnico: "
                 f"{datos_pais['error_busqueda']}"
+            )
+        elif es_seccion_cepal:
+            texto_vacio = (
+                "La CEPAL no publicó material sobre protección social "
+                "en las últimas dos semanas, o su sitio no estaba "
+                "indexado al momento de la consulta. Esta sección "
+                "recoge lo que publica la propia CEPAL —incluidas sus "
+                "notas sobre los diez países—, no la prensa nacional."
             )
         else:
             texto_vacio = (

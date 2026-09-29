@@ -58,6 +58,8 @@ import re
 import time
 import requests
 from datetime import datetime, timedelta, timezone
+
+from cepal import SECCION_CEPAL, construir_query_cepal
 from typing import List, Dict, Optional
 from urllib.parse import urlparse
 
@@ -92,42 +94,122 @@ PAISES = [
 # forma sostenida, puede ser que falte agregar un medio relevante a su
 # lista — no necesariamente significa que no haya cobertura real.
 SITIOS_PAIS = {
+    # Revisión completa con verificación por búsqueda: 29-sep-2026.
+    # Se comprobó uno por uno que el dominio existe, que la grafía es
+    # la correcta y que el medio sigue publicando. Hallazgos:
+    #   - republica.gt estaba MUERTO (redirige a republica.com/usa), o
+    #     sea que una de las cinco entradas de Guatemala no devolvía
+    #     nada desde hacía tiempo.
+    #   - elmundo.sv y diario.elmundo.sv eran la misma cosa duplicada.
+    #   - La lista de Cuba era TODA de medios del exilio; faltaba la
+    #     prensa oficial, que es justamente la que informa de las
+    #     medidas de protección social del Estado cubano.
+    #   - Haití, el país con peor cobertura histórica, tenía solo 5
+    #     medios y uno de ellos (loophaiti.com) sin actividad
+    #     verificable desde 2020.
+    #
+    # CRITERIO PARA AÑADIR: diarios nacionales, medios económicos y
+    # medios de investigación de alcance nacional. NO se añaden medios
+    # locales o estatales — son la causa de las notas de Veracruz,
+    # Coahuila y Quintana Roo que se colaron en reportes anteriores.
+    #
+    # LÍMITE DELIBERADO: unos 8 dominios por país. Cada uno alarga la
+    # consulta, y las consultas largas con site: fueron lo que falló en
+    # la incidencia de SerpAPI del 20-sep-2026. Los sitios oficiales de
+    # las instituciones rectoras (IGSS, CCSS, MIDES, ONA…) quedaron
+    # fuera a propósito: ya llegan por la capa de anclas cuando son
+    # noticia, y en la capa 1 desplazarían al periodismo por
+    # comunicados —Guatemala ya salió 4 de 5 con notas del IGSS—.
+    # La lista verificada está en el README por si se quiere usar.
+
+    # Sección regional de la CEPAL. Se registra aquí, junto a la prensa
+    # nacional, para que reutilice toda la maquinaria ya probada: el
+    # operador site:, el reconocimiento de "medio curado" y el descarte
+    # de una noticia de cepal.org en la sección de un país. Ver cepal.py.
+    "CEPAL (regional)": ["cepal.org", "dds.cepal.org"],
+
     "Costa Rica": [
-        "nacion.com", "crhoy.com", "lateja.cr", "diarioextra.com",
+        "nacion.com", "crhoy.com", "diarioextra.com",
         "semanariouniversidad.com",
+        "delfino.cr",            # digital de política pública
+        "elmundo.cr",            # ya aportaba notas vía la capa 2 (ojo: NO es elmundo.sv)
+        "elfinancierocr.com",    # económico; cubre la reforma de pensiones
+        "observador.cr",
+        # lateja.cr retirado: es de sucesos y deportes, sin valor para este tema.
     ],
     "Cuba": [
+        # Independientes y del exilio.
         "cibercuba.com", "14ymedio.com", "diariodecuba.com",
-        "oncubanews.com", "cubanet.org", "periodicocubano.com",
+        "oncubanews.com", "cubanet.org",
+        # Oficiales, publicados desde Cuba. Son los que informan de las
+        # medidas del Estado: pagos a jubilados, resoluciones del MTSS,
+        # escalas salariales. Sin ellos la sección de Cuba solo veía el
+        # tema desde fuera.
+        "granma.cu",         # órgano del Comité Central del PCC
+        "cubadebate.cu",     # publica íntegras las resoluciones del MTSS
+        "trabajadores.cu",   # órgano de la CTC: seguridad social directa
+        # periodicocubano.com retirado para dejar sitio a la prensa oficial.
     ],
     "El Salvador": [
-        "elsalvador.com", "laprensagrafica.com", "diario.elmundo.sv",
-        "elmundo.sv", "gatoencerrado.news",
+        "elsalvador.com", "laprensagrafica.com",
+        "elmundo.sv",            # cubre también diario.elmundo.sv (match por subdominio)
+        "gatoencerrado.news",
+        "elfaro.net",            # investigación de referencia
+        "diarioelsalvador.com",  # línea oficialista: anuncios de gobierno
+        "diariocolatino.com",    # temas laborales y sindicales
+        # diario.elmundo.sv retirado: era duplicado de elmundo.sv.
     ],
     "Guatemala": [
         "prensalibre.com", "soy502.com", "plazapublica.com.gt",
-        "lahora.gt", "republica.gt",
+        "lahora.gt",
+        "agn.gt",                # agencia estatal: anuncios de MIDES e IGSS
+        "guatevision.com",
+        "agenciaocote.com",      # derechos sociales y política pública
+        # republica.gt RETIRADO: dominio muerto, redirige a republica.com/usa.
     ],
     "Haití": [
+        # El país con peor cobertura del monitoreo, y el único
+        # francófono: se amplía más que los demás a propósito.
         "lenouvelliste.com", "haitilibre.com", "ayibopost.com",
-        "loophaiti.com", "alterpresse.org",
+        "alterpresse.org",
+        "juno7.ht",          # ya aportaba notas vía la capa 2
+        "lenational.org",    # cubrió el foro del ONA sobre pensiones
+        "metropole.ht",      # Radio Télé Métropole (NO metropolehaiti.com)
+        "gazettehaiti.com",
+        "vantbefinfo.com",
+        # loophaiti.com RETIRADO: sin publicaciones verificables desde 2020.
     ],
     "Honduras": [
         "laprensa.hn", "latribuna.hn", "tiempo.hn", "elheraldo.hn",
+        "criterio.hn",           # cobertura sostenida del IHSS y pensiones
+        "proceso.hn",            # ya aportaba notas vía la capa 2
+        "contracorriente.red",   # investigación (dominio .red, no .hn)
+        "elpais.hn",
     ],
     "México": [
         "eluniversal.com.mx", "excelsior.com.mx", "milenio.com",
         "jornada.com.mx", "elfinanciero.com.mx",
+        "eleconomista.com.mx",   # Afores, IMSS, seguridad social
+        "expansion.mx",
+        "grupoanimal.mx",        # Animal Político: animalpolitico.com redirige aquí
     ],
     "Nicaragua": [
-        "laprensani.com", "confidencial.digital", "el19digital.com",
+        "laprensani.com",        # dominio vigente: el .com.ni fue cancelado en 2025
+        "confidencial.digital", "el19digital.com",
+        "divergentes.com",       # ya aportaba notas vía la capa 2
+        "despacho505.com",
+        "nicaraguainvestiga.com",
     ],
     "Panamá": [
         "prensa.com", "tvn-2.com", "telemetro.com", "panamaamerica.com.pa",
+        "laestrella.com.pa",     # tiene sección de Economía propia
+        "focopanama.com",
     ],
     "República Dominicana": [
         "diariolibre.com", "listindiario.com", "elnuevodiario.com.do",
         "elnacional.com.do", "elcaribe.com.do",
+        "eldinero.com.do",       # único medio especializado en economía
+        "acento.com.do",
     ],
 }
 
@@ -720,6 +802,72 @@ def _parece_archivo_antiguo(item: Dict) -> bool:
     return not hay_anio_reciente
 
 
+# Fragmentos de URL propios de páginas de LISTADO, no de artículos:
+# etiquetas, secciones, archivos, autores, resultados de búsqueda.
+_RUTAS_DE_INDICE = (
+    "/tag/", "/tags/", "/etiqueta/", "/etiquetas/",
+    "/categoria/", "/categorias/", "/category/",
+    "/seccion/", "/secciones/", "/section/",
+    "/vertodos/", "/archivo/", "/archives/",
+    "/autor/", "/author/", "/buscar/", "/search",
+)
+
+
+def _es_pagina_indice(item: Dict) -> bool:
+    """
+    True si el resultado es una página de listado (etiqueta, sección,
+    archivo, búsqueda) en vez de una noticia.
+
+    CASOS CONFIRMADOS (29-sep-2026, Nicaragua): el reporte incluyó dos
+    entradas tituladas "Vienicsa" y "Económicas", que no eran notas
+    sino la página de la etiqueta "vienicsa" de La Prensa
+    (laprensani.com/tag/vienicsa) y el listado de la sección Económicas
+    de El 19 Digital (.../articulos/vertodos/economicas?page=...).
+
+    Aparecen sobre todo por la vía de organic_results: cuando la
+    consulta es muy restrictiva, Google devuelve resultados web en vez
+    de noticias, y ahí caben las páginas índice de los propios medios
+    curados. El código ya preveía el caso en un comentario, pero no lo
+    detectaba.
+
+    Dos señales, cualquiera basta:
+
+    1. La RUTA de la URL es de listado (ver _RUTAS_DE_INDICE), o lleva
+       un parámetro de paginación (?page=, &page=).
+    2. El TÍTULO tiene una o dos palabras Y la URL no parece la de un
+       artículo. Las dos condiciones juntas, nunca una sola: un
+       titular corto pero real existe ("Aumentan pensiones",
+       "Retraite: réforme"), y descartarlo en duro por contar palabras
+       perdería noticias buenas. La corroboración es que el último
+       tramo de la URL no lleve guiones: los CMS generan los enlaces de
+       artículo a partir del titular, así que casi siempre quedan
+       como /aumentan-pensiones, mientras que una sección es
+       /economicas a secas.
+
+    Es un descarte DURO: una página de listado no es una noticia, y eso
+    no es un juicio dudoso que convenga delegar en el verificador. Por
+    eso las reglas son estrechas a propósito — de hecho, los dos casos
+    confirmados de Nicaragua los atrapa ya la regla 1 sola.
+    """
+    link = (item.get("link") or "").lower()
+    ruta = re.sub(r"^https?://[^/]+", "", link)
+
+    if any(marca in ruta for marca in _RUTAS_DE_INDICE):
+        return True
+    if re.search(r"[?&]page=", ruta):
+        return True
+
+    titulo = (item.get("title") or "").strip()
+    if titulo and len(titulo.split()) <= 2:
+        tramos = [t for t in ruta.split("?")[0].split("/") if t]
+        ultimo = tramos[-1] if tramos else ""
+        parece_articulo = "-" in ultimo or "_" in ultimo
+        if not parece_articulo:
+            return True
+
+    return False
+
+
 def _dentro_del_rango(item: Dict, dias_maximos: int) -> bool:
     """
     Filtro de respaldo en Python: True si la noticia está dentro del
@@ -880,15 +1028,17 @@ def _buscar_una_vez(
     #    una vez al país buscado (ver _es_de_otro_pais_con_certeza): el
     #    verificador LLM cae en las mismas trampas de topónimo que los
     #    filtros de texto, así que este caso no puede quedar a su juicio.
+    #  - página de listado en vez de noticia (ver _es_pagina_indice).
     noticias_crudas = [
         item for item in noticias_crudas
         if _dentro_del_rango(item, dias_maximos_antiguedad)
+        and not _es_pagina_indice(item)
         and not _dominio_curado_de_otro_pais(item, pais)
         and not _es_de_otro_pais_con_certeza(item, pais)
     ]
 
-    def _convertir(item: Dict) -> Dict:
-        return {
+    def _convertir(item: Dict, motivo: Optional[str] = None) -> Dict:
+        convertida = {
             "pais": pais,
             "titulo": item.get("title", "Sin título"),
             "fuente": _extraer_fuente(item),
@@ -896,6 +1046,13 @@ def _buscar_una_vez(
             "snippet": item.get("snippet", ""),
             "link": item.get("link", ""),
         }
+        # El motivo por el que una noticia quedó marginal determina
+        # cuánto conviene confiar en ella si luego hay que rescatarla
+        # (ver PRIORIDAD_MOTIVO_MARGINAL y summarizer). No es solo para
+        # diagnóstico: cambia el orden en que el verificador las revisa.
+        if motivo:
+            convertida["_motivo_marginal"] = motivo
+        return convertida
 
     aceptadas = []
     descartadas_marginales = []
@@ -917,6 +1074,20 @@ def _buscar_una_vez(
         # justo lo que esta regla exige.
         de_medio_curado = _es_dominio_curado_del_pais(item, pais)
 
+        # La sección regional de la CEPAL no tiene país, así que los
+        # filtros de país cruzado no solo sobran: estorban. Una nota de
+        # la CEPAL sobre Honduras menciona Honduras, y eso ahí no es
+        # ruido — es exactamente el contenido que la sección debe
+        # mostrar. Solo se le aplican los filtros de fecha y de tema.
+        if pais == SECCION_CEPAL:
+            if _es_relevante_al_tema(item):
+                aceptadas.append(_convertir(item))
+            else:
+                descartadas_marginales.append(
+                    _convertir(item, motivo="tema_ausente")
+                )
+            continue
+
         sin_evidencia_de_pais = (
             not de_medio_curado
             and not _menciona_el_pais(item, pais)
@@ -930,18 +1101,37 @@ def _buscar_una_vez(
         # verificador, que decide con criterio en vez de por palabra.
         tema_demasiado_debil = not de_medio_curado and not _tema_en_el_titulo(item)
 
-        es_marginal = (
-            es_respaldo_web  # resultado web, no noticia: siempre lo revisa el verificador
-            or sin_evidencia_de_pais
-            or tema_demasiado_debil
-            or not _es_relevante_al_tema(item)
-            or _menciona_otro_pais(item, pais)
-            or _dominio_de_otro_pais(item, pais)
-            or _menciona_subdivision_de_riesgo(item, pais)
-            or _menciona_senal_de_otro_pais(item, pais)
-        )
-        if es_marginal:
-            descartadas_marginales.append(_convertir(item))
+        # El ORDEN importa: el primer motivo que se cumple es el que
+        # queda registrado, y de él depende la prioridad con que el
+        # verificador revisará la noticia si hace falta rescatarla.
+        # Los motivos de país van antes que los de tema, porque el
+        # verificador juzga bien el país y ha demostrado ser demasiado
+        # generoso con el tema (ver PRIORIDAD_MOTIVO_MARGINAL).
+        if not _es_relevante_al_tema(item):
+            motivo = "tema_ausente"
+        elif _menciona_otro_pais(item, pais):
+            motivo = "menciona_otro_pais"
+        elif _dominio_de_otro_pais(item, pais):
+            motivo = "dominio_de_otro_pais"
+        elif _menciona_subdivision_de_riesgo(item, pais):
+            motivo = "subdivision_de_otro_pais"
+        elif _menciona_senal_de_otro_pais(item, pais):
+            motivo = "senal_de_otro_pais"
+        elif sin_evidencia_de_pais:
+            motivo = "sin_evidencia_de_pais"
+        elif _es_evento_ceremonial(item):
+            motivo = "evento_ceremonial"
+        elif tema_demasiado_debil:
+            motivo = "tema_solo_en_extracto"
+        elif es_respaldo_web:
+            # Resultado web, no noticia: Google mismo dijo que no es
+            # prensa, así que lo revisa siempre el verificador.
+            motivo = "resultado_web"
+        else:
+            motivo = None
+
+        if motivo:
+            descartadas_marginales.append(_convertir(item, motivo=motivo))
         else:
             aceptadas.append(_convertir(item))
 
@@ -1090,14 +1280,6 @@ def _buscar_prensa_pais(
     }
 
 
-# Cuántas noticias de CEPAL/ReDeSoc pueden encabezar la sección de un
-# país. Se limita a 2 a propósito: la CEPAL es la fuente más autorizada
-# del reporte, pero el objetivo del monitoreo es la prensa nacional. Sin
-# tope, una semana activa de ReDeSoc podría copar las 5 posiciones de un
-# país y borrar la cobertura local, que es justo lo que se quiere ver.
-MAX_NOTICIAS_CEPAL_POR_PAIS = 2
-
-
 def buscar_noticias_pais(
     pais: str,
     api_key: str,
@@ -1106,85 +1288,49 @@ def buscar_noticias_pais(
     rango_tiempo: str = "qdr:w",
     dias_maximos_antiguedad: int = DIAS_MAXIMOS_ANTIGUEDAD,
     n_noticias_necesarias: int = 5,
-    incluir_cepal: bool = True,
 ) -> Dict:
     """
-    Punto de entrada del Agente 1. Combina DOS fuentes:
+    Punto de entrada del Agente 1.
 
-    A. CEPAL / ReDeSoc (cepal.py) — la Red de Desarrollo Social de la
-       propia CEPAL, leída por RSS. Es la fuente más autorizada del
-       reporte y no gasta cuota de SerpAPI, así que va PRIMERO y sus
-       noticias encabezan la sección de cada país (con tope, ver
-       MAX_NOTICIAS_CEPAL_POR_PAIS).
+    Para los 10 países: la estrategia en capas de siempre sobre la
+    prensa nacional (ver _buscar_prensa_pais).
 
-       Por qué hace falta un módulo aparte y no bastaba la palabra
-       "CEPAL" en los términos de búsqueda: la capa 1 restringe con
-       site: a medios de prensa nacionales, donde cepal.org no encaja
-       —es un organismo regional—, y la búsqueda usa la pestaña de
-       Noticias de Google, que no indexa páginas institucionales sin
-       fecha. El término "CEPAL protección social" nunca pudo traer
-       nada de la CEPAL; solo alargaba la consulta.
+    Para la sección regional de la CEPAL (SECCION_CEPAL): una sola
+    consulta restringida a los dominios de la CEPAL, con los términos
+    temáticos de cepal.TERMINOS_CEPAL. No se usa la capa de anclas de
+    texto, que busca el nombre de un país, porque esta sección no
+    tiene país: aquí una nota sobre Honduras es contenido válido, no
+    ruido (ver la clasificación en _buscar_una_vez).
 
-    B. Prensa nacional vía SerpAPI (_buscar_prensa_pais), con la
-       estrategia en capas de siempre.
-
-    La sección regional SECCION_CEPAL se sirve SOLO de la fuente A y no
-    consulta SerpAPI en absoluto, así que no consume cuota.
-
-    Si ReDeSoc no responde, esta función se comporta exactamente como
-    antes: devuelve la prensa nacional y nada más. La fuente CEPAL
-    nunca puede hacer fallar un reporte.
+    Nota histórica: esta sección se intentó primero por los feeds RSS
+    de ReDeSoc, que serían gratis y ya vienen curados por la propia
+    División de Desarrollo Social. Están rotos del lado de la CEPAL
+    —error 500, verificado el 29-sep-2026— y por eso el reporte de ese
+    día salió con la sección vacía. El detalle está en cepal.py.
     """
-    try:
-        from cepal import (
-            SECCION_CEPAL,
-            formatear_para_reporte,
-            item_es_del_pais,
-            obtener_items_redesoc,
+    if pais == SECCION_CEPAL:
+        resultado = _buscar_una_vez(
+            pais, api_key, construir_query_cepal(),
+            rango_tiempo, max_resultados, dias_maximos_antiguedad,
         )
-    except Exception:
-        SECCION_CEPAL = None
-        incluir_cepal = False
+        # Igual que los países: si una semana no trae nada, se reintenta
+        # con dos semanas antes de declarar la sección vacía. La CEPAL
+        # publica con menos frecuencia que la prensa diaria, así que
+        # este respaldo le hace más falta que a nadie.
+        if resultado["error"] is None and not resultado["aceptadas"] and rango_tiempo == "qdr:w":
+            resultado_2sem = _buscar_una_vez(
+                pais, api_key, construir_query_cepal(),
+                "qdr:w2", max_resultados, dias_maximos_antiguedad=14,
+            )
+            if resultado_2sem["error"] is None:
+                resultado_2sem["descartadas_marginales"] = (
+                    resultado["descartadas_marginales"]
+                    + resultado_2sem["descartadas_marginales"]
+                )
+                return resultado_2sem
+        return resultado
 
-    noticias_cepal: List[Dict] = []
-    if incluir_cepal:
-        try:
-            items = obtener_items_redesoc(dias_maximos=dias_maximos_antiguedad)
-            if pais == SECCION_CEPAL:
-                # Sección regional: todo lo que NO pertenezca a ninguno
-                # de los 10 países, para no duplicar lo que ya aparece
-                # en sus secciones. Aquí caen los informes regionales,
-                # los seminarios y las notas comparativas, que es
-                # precisamente el material propio de la CEPAL.
-                seleccion = [
-                    item for item in items
-                    if not any(
-                        item_es_del_pais(item, p, DEMONIMOS_PAIS) for p in PAISES
-                    )
-                ]
-            else:
-                seleccion = [
-                    item for item in items
-                    if item_es_del_pais(item, pais, DEMONIMOS_PAIS)
-                ][:MAX_NOTICIAS_CEPAL_POR_PAIS]
-
-            noticias_cepal = [
-                {"pais": pais, **formatear_para_reporte(item)}
-                for item in seleccion
-            ]
-        except Exception:
-            noticias_cepal = []
-
-    # La sección regional no busca prensa: no tiene medios nacionales
-    # que consultar y gastaría cuota de SerpAPI para nada.
-    if SECCION_CEPAL is not None and pais == SECCION_CEPAL:
-        return {
-            "aceptadas": noticias_cepal[:max_resultados],
-            "descartadas_marginales": [],
-            "error": None,
-        }
-
-    resultado = _buscar_prensa_pais(
+    return _buscar_prensa_pais(
         pais=pais,
         api_key=api_key,
         terminos=terminos,
@@ -1193,26 +1339,6 @@ def buscar_noticias_pais(
         dias_maximos_antiguedad=dias_maximos_antiguedad,
         n_noticias_necesarias=n_noticias_necesarias,
     )
-
-    if not noticias_cepal:
-        return resultado
-
-    # Si SerpAPI falló pero ReDeSoc respondió, el país ya no queda
-    # vacío: se entrega lo de la CEPAL y se deja de reportar el error,
-    # porque el reporte sí tiene contenido verificable para ese país.
-    if resultado.get("error") is not None:
-        return {
-            "aceptadas": noticias_cepal[:max_resultados],
-            "descartadas_marginales": [],
-            "error": None,
-        }
-
-    combinadas = deduplicar_noticias(noticias_cepal + resultado["aceptadas"])
-    return {
-        "aceptadas": combinadas[:max_resultados],
-        "descartadas_marginales": resultado["descartadas_marginales"],
-        "error": None,
-    }
 
 
 def _extraer_fuente(item: Dict) -> str:
@@ -1585,6 +1711,87 @@ def _menciona_el_pais(item: Dict, pais_buscado: str) -> bool:
     return any(
         re.search(r"\b" + re.escape(c) + r"\b", texto)
         for c in candidatos
+    )
+
+
+# Actos festivos, ceremoniales o deportivos. Cuando uno de estos es el
+# asunto del titular, la institución de protección social suele ser
+# solo la SEDE o la anfitriona del acto, no el tema de la noticia.
+#
+# CASO CONFIRMADO (29-sep-2026, México): "Celebra IMSS Veracruz Norte
+# Fiestas Patrias 2026 en Centro de Seguridad Social Xalapa". Pasó
+# todos los filtros con holgura, porque "seguridad social" e "IMSS"
+# están literalmente en el titular. Y lo están: es el nombre del lugar
+# y el de la institución que organiza la fiesta. La noticia trata de
+# una celebración patria.
+#
+# Se buscan solo en el TÍTULO: en el cuerpo de una nota legítima es
+# normal mencionar de pasada un aniversario o un acto. Y NO se
+# descarta en duro, solo se manda al verificador: hay actos
+# ceremoniales que sí son noticia del tema (la firma de un convenio en
+# un acto público, por ejemplo), y esa distinción necesita criterio.
+EVENTOS_CEREMONIALES = [
+    "fiestas patrias", "mes de la independencia", "desfile", "desfiles",
+    "verbena", "kermés", "kermes", "posada", "posadas",
+    "festival", "feria patronal", "carnaval",
+    "misa", "romería", "romeria",
+    "concurso de belleza", "reina del", "certamen",
+    "torneo", "campeonato", "maratón", "maraton", "carrera atlética",
+    "gala", "coctel", "cóctel",
+]
+
+
+def _es_evento_ceremonial(item: Dict) -> bool:
+    """
+    True si el TÍTULO indica que la noticia cubre un acto festivo,
+    ceremonial o deportivo. Ver EVENTOS_CEREMONIALES.
+    """
+    titulo = (item.get("title") or "").lower()
+    return any(
+        re.search(r"\b" + re.escape(evento) + r"\b", titulo)
+        for evento in EVENTOS_CEREMONIALES
+    )
+
+
+# Cuánto merece confiarse en una noticia marginal cuando hay que
+# rescatarla para completar el cupo. Número más bajo = se revisa antes.
+#
+# La razón de que exista este orden: el 29-sep-2026 el reporte de
+# Honduras incluyó "Instituciones que persiguen el crimen priorizan
+# desalojos frente a otros delitos", una nota de seguridad y justicia
+# sin ninguna palabra del tema. Había quedado marginal por
+# "tema_ausente", el verificador la revisó para llenar el quinto hueco
+# y dijo que sí.
+#
+# El verificador juzga bien el PAÍS —esa pregunta es objetiva— pero ha
+# demostrado ser demasiado generoso con el TEMA. Así que las dudosas
+# por país se le ofrecen primero, y las que no tienen ni una palabra
+# del tema quedan al final de la cola: solo se miran si de verdad no
+# hay nada mejor.
+PRIORIDAD_MOTIVO_MARGINAL = {
+    "sin_evidencia_de_pais": 1,
+    "tema_solo_en_extracto": 2,
+    "subdivision_de_otro_pais": 3,
+    "senal_de_otro_pais": 4,
+    "dominio_de_otro_pais": 5,
+    "menciona_otro_pais": 6,
+    "resultado_web": 7,
+    "evento_ceremonial": 8,
+    "tema_ausente": 9,   # el último recurso
+}
+
+
+def ordenar_marginales(marginales: List[Dict]) -> List[Dict]:
+    """
+    Ordena las descartadas marginales de más a menos rescatables, según
+    el motivo por el que fueron apartadas (ver PRIORIDAD_MOTIVO_MARGINAL).
+    Mantiene el orden relativo original dentro de cada motivo.
+    """
+    return sorted(
+        marginales,
+        key=lambda n: PRIORIDAD_MOTIVO_MARGINAL.get(
+            n.get("_motivo_marginal", ""), 99
+        ),
     )
 
 
