@@ -1,0 +1,21 @@
+# Claves de API — NUNCA deben subirse a GitHub.
+.streamlit/secrets.toml
+*.env
+.env
+
+# Caché local de noticias (se regenera solo; en Streamlit Cloud vive
+# dentro del contenedor y se pierde en cada redespliegue).
+cache_noticias.db
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Sistema operativo / editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
