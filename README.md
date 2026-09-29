@@ -14,10 +14,16 @@ país** para refrescar solo uno sin gastar cuota en los otros 9.
 ```
 app.py          -> Interfaz Streamlit, orquesta los dos agentes + caché
 scraper.py       -> AGENTE 1: recolecta noticias vía SerpAPI (google_news)
+cepal.py         -> FUENTE DIRECTA: feed RSS de ReDeSoc (CEPAL), sin cuota
 summarizer.py    -> AGENTE 2: resume con Groq (GPT OSS 120B) + genera el .docx
 cache.py         -> Caché diario por país en SQLite (cache_noticias.db)
 requirements.txt -> Dependencias
 ```
+
+El reporte tiene **11 secciones**: los 10 países más una sección
+regional, `CEPAL (regional)`, con el material de la CEPAL que no
+corresponde a un país en particular (informes regionales, seminarios,
+notas comparativas).
 
 ## Cómo funciona el caché
 
@@ -145,6 +151,75 @@ pestaña de país en vez de "🆕 Recién generado".
      exhaustiva. Esta capa SOLO se activa cuando hace falta — un país
      con cobertura normal (la mayoría) nunca la usa, así que no
      incrementa el consumo de cuota de Groq en el caso común.
+- **Filtro de fecha a prueba de páginas de archivo.** Google fecha por
+  rastreo las páginas que no llevan fecha propia, y entonces reporta
+  material viejo como si fuera de esta semana. Ocurrió el 29-sep-2026:
+  en Guatemala entró `Conversatorio-UNOPS-IGSS-Guatemala-2018-2`, que no
+  era una noticia sino la página de una **foto de un evento de 2018**,
+  con `date: "hace 6 días"`. El dato de fecha era falso en origen, así
+  que ningún filtro de fecha podía atraparlo. Ahora se usan tres
+  señales, en este orden (ver `_dentro_del_rango` en `scraper.py`):
+  1. **La fecha incrustada en la URL** (`/2026/09/23/…`), cuando existe.
+     La pone el propio medio al publicar y manda sobre lo que diga
+     Google. Se interpreta como el final de ese día, para que una nota
+     publicada justo en el límite del rango no se pierda por unas horas
+     que el dato nunca tuvo.
+  2. **Señales de archivo antiguo**: un año pasado en el título o en la
+     ruta de la URL sin ningún año reciente que lo acompañe, o un título
+     con forma de nombre de archivo (sin espacios y con guiones, típico
+     de fotos, galerías y PDFs sueltos). Solo se mira el título y la
+     URL, nunca el extracto: en el cuerpo de una noticia actual es
+     normal citar años pasados.
+  3. La fecha que reporta SerpAPI, como antes.
+
+  Estas noticias se descartan **en duro**: no pasan al verificador. La
+  antigüedad es un hecho objetivo, no un caso dudoso que convenga que
+  un modelo revise.
+- **Topónimos homónimos: el nombre de un país dentro del nombre de otro
+  lugar.** Confirmado el 29-sep-2026: en el reporte de El Salvador entró
+  una nota de **Perú** (Agencia Andina) sobre *Villa El Salvador*, un
+  distrito de Lima de unos 400.000 habitantes. El filtro buscaba
+  "El Salvador" como palabra completa y lo encontraba —dentro del nombre
+  de otro lugar—, así que la nota pasaba la prueba de país.
+
+  Es un fallo de clase, no un caso aislado: *Nuevo México* es un estado
+  de Estados Unidos, *Panama City* está en Florida, hay una comuna
+  llamada *Cuba* en Pereira (Colombia) y un corregimiento llamado
+  *Honduras* en el Cauca (Colombia). La corrección es estructural y
+  tiene tres piezas:
+
+  1. **Enmascarado** (`TOPONIMOS_HOMONIMOS`). Antes de buscar el nombre
+     del país, los topónimos conocidos se sustituyen por un marcador
+     neutro: donde el texto diga "Villa El Salvador" ya no queda ningún
+     "El Salvador" que encontrar. Enmascarar es mejor que excluir la
+     noticia entera, porque una nota que hable de *Villa El Salvador*
+     **y** de *El Salvador* conserva la segunda mención. Además, el
+     topónimo pasa a ser **evidencia positiva** del país real: quien
+     menciona Villa El Salvador está hablando de Perú.
+  2. **Marcadores geográficos** (en `SUBDIVISIONES_DE_RIESGO_CONFIRMADAS`)
+     para los lugares que se llaman *exactamente* igual que un país
+     —el municipio El Salvador de Guantánamo (Cuba), la sindicatura
+     Costa Rica de Culiacán (México), el pueblo minero El Salvador de
+     Atacama (Chile)—. Esos no se pueden enmascarar sin romper las
+     menciones legítimas, así que se detectan por el territorio que los
+     rodea. Estos solo marcan la noticia como dudosa, no la eliminan.
+  3. **Un descarte duro nuevo** (`_es_de_otro_pais_con_certeza`): dominio
+     nacional de otro país **y** el texto no nombra al buscado ni una
+     vez. Hacía falta porque la nota peruana **ya estaba marcada como
+     marginal** (su TLD es `.pe`): llegó al reporte porque El Salvador
+     se quedó corto de noticias y **el verificador de Groq la rescató**,
+     al leer "Villa El Salvador" en el titular. El verificador cae en la
+     misma trampa que los filtros de texto, así que este caso ya no
+     queda a su juicio. Al verificador se le añadió además la regla
+     explícita sobre topónimos, para los casos aún no catalogados.
+
+  El descarte duro es deliberadamente estrecho: **no** basta el TLD
+  extranjero. La prensa mexicana cubre Centroamérica, y una nota de un
+  medio `.mx` sobre el IGSS de Guatemala sí nombra a Guatemala, así que
+  sobrevive como marginal y el verificador puede rescatarla.
+
+  Comprobado contra el reporte real del 29-sep: de sus 44 noticias,
+  sobreviven 42 y caen exactamente las dos defectuosas.
 - **Fallback automático a 2 semanas:** dentro de las capas 1 y 2, si la
   búsqueda de 1 semana no trae ninguna noticia aceptada, se reintenta
   con un rango de 2 semanas antes de pasar a la siguiente capa (o
@@ -169,6 +244,52 @@ pestaña de país en vez de "🆕 Recién generado".
   consecuencia. Si aun así aparecen errores 429 en el detalle técnico,
   el código los absorbe con reintentos y espera progresiva (2s, 4s, 8s):
   la ejecución tarda más, pero no falla.
+
+## La fuente CEPAL / ReDeSoc
+
+Además de la prensa nacional, el reporte lee directamente el boletín de
+la **Red de Desarrollo Social de América Latina y el Caribe (ReDeSoc)**,
+de la División de Desarrollo Social de la CEPAL:
+https://dds.cepal.org/redesoc/noticias
+
+Se lee por **RSS** (`cepal.py`), no por Google, así que:
+
+- **no consume cuota de SerpAPI** — la sección regional es gratis;
+- sus noticias **encabezan** la sección de cada país, con un tope de 2
+  (`MAX_NOTICIAS_CEPAL_POR_PAIS`) para que no desplacen a la prensa
+  nacional, que es el objeto del monitoreo;
+- si SerpAPI falla para un país pero ReDeSoc respondió, ese país ya no
+  queda vacío.
+
+**Por qué no bastaba poner "CEPAL" en los términos de búsqueda.** Hasta
+el 29-sep-2026 la palabra estaba en dos sitios y ninguno podía traer
+contenido de la CEPAL:
+
+1. Como término de búsqueda (`"CEPAL protección social"`): la capa 1
+   restringe con `site:` a medios de prensa nacionales y cepal.org no
+   está —ni puede estar— en la lista de ningún país, porque es un
+   organismo regional. En la capa 2 se buscaba como frase exacta, que
+   no aparece literalmente en ningún titular. El término se retiró.
+2. Como palabra clave de relevancia (`"cepal"` en
+   `PALABRAS_CLAVE_RELEVANCIA`): eso hace que una noticia de prensa que
+   *mencione* a la CEPAL pase el filtro temático. Sigue ahí, y es útil,
+   pero es otra cosa.
+
+A esto se suma que la búsqueda usa la pestaña de Noticias de Google
+(`tbm=nws`), que indexa medios de prensa: las páginas institucionales de
+la CEPAL no son prensa y muchas no llevan fecha propia.
+
+**Si el feed cambia de dirección**, las URLs están en `FEEDS_REDESOC`
+(`cepal.py`) y se verifican en la página de ReDeSoc enlazada arriba.
+Para comprobar que responde, sin tocar la app:
+
+```bash
+python3 cepal.py
+```
+
+Si el feed no responde, la app se comporta exactamente como antes:
+entrega la prensa nacional y la sección regional queda vacía. Esa
+fuente **nunca puede hacer fallar un reporte**.
 
 ## Mantenimiento: deprecaciones de modelos de Groq
 

@@ -270,11 +270,24 @@ INSTITUCIONES_PAIS = {
 TERMINOS_TEMATICOS = [
     "programas de protección social",
     "seguridad social",
-    "CEPAL protección social",
     "desarrollo social",
     "asistencia social",
     "transferencias monetarias",
 ]
+# Nota (29-sep-2026): aquí había un sexto término, "CEPAL protección
+# social". Se retiró porque no podía funcionar y además estorbaba:
+#   - En la capa 1 la query va restringida con site: a medios de prensa
+#     nacionales. cepal.org no está en ninguna lista (es un organismo
+#     regional, no prensa de un país), así que el término nunca podía
+#     dar resultado ahí.
+#   - En la capa 2 se busca como frase exacta, y "CEPAL protección
+#     social" no aparece literalmente en ningún titular.
+#   - Cada término alarga la consulta, y las consultas largas fueron lo
+#     que se cayó en la incidencia de SerpAPI del 20-sep-2026.
+# Las noticias de la CEPAL ahora llegan por su fuente real, el feed de
+# ReDeSoc (ver cepal.py). Que una noticia de prensa MENCIONE a la CEPAL
+# se sigue detectando aparte, con la palabra clave "cepal" de
+# PALABRAS_CLAVE_RELEVANCIA.
 
 # Términos temáticos en francés, exclusivos para Haití (único país
 # francófono de los 10). Sin esto, la búsqueda en español filtra de
@@ -538,8 +551,16 @@ def _menciona_otro_pais(item: Dict, pais_buscado: str) -> bool:
 
     Nota: no se aplica al propio país buscado — solo a la mención
     explícita de OTROS países (o sus demónimos) como palabra completa.
+
+    Cuenta también como mención de otro país la presencia de un
+    topónimo homónimo (ver TOPONIMOS_HOMONIMOS): si el texto habla de
+    "Villa El Salvador", eso no solo deja de ser evidencia de El
+    Salvador, es evidencia de que la noticia es peruana.
     """
-    texto = f"{item.get('title', '')} {item.get('snippet', '')}".lower()
+    texto, paises_delatados = _texto_de_pais(item)
+
+    if paises_delatados - {pais_buscado}:
+        return True
 
     otros_paises = [p for p in PAISES_A_EXCLUIR_SI_NO_BUSCADOS if p != pais_buscado]
 
@@ -596,17 +617,142 @@ def _parsear_fecha_serpapi(item: Dict) -> Optional[datetime]:
     return None
 
 
+# Patrones de fecha incrustada en la URL. Casi todos los gestores de
+# contenido (WordPress, Drupal y los CMS de los medios curados) ponen
+# la fecha real de publicación en la ruta: /2026/09/23/titulo o
+# /noticias/2026-09-23-titulo. Cuando existe, es MÁS confiable que el
+# campo "date" de SerpAPI, que refleja lo que Google cree (y Google se
+# equivoca en páginas sin fecha propia: las fecha por rastreo).
+_PATRONES_FECHA_URL = (
+    re.compile(r"/((?:19|20)\d{2})/(\d{1,2})/(\d{1,2})(?:/|$|[-_])"),
+    re.compile(r"[/\-_]((?:19|20)\d{2})-(\d{1,2})-(\d{1,2})(?:[/\-_.]|$)"),
+)
+
+
+def _fecha_desde_url(link: str) -> Optional[datetime]:
+    """
+    Extrae la fecha de publicación incrustada en la URL, si la hay.
+    Devuelve None si la URL no lleva fecha o si los componentes no
+    forman una fecha válida.
+    """
+    if not link:
+        return None
+    for patron in _PATRONES_FECHA_URL:
+        match = patron.search(link)
+        if not match:
+            continue
+        anio, mes, dia = (int(g) for g in match.groups())
+        try:
+            # Fin del día, no medianoche: la URL indica el DÍA de
+            # publicación, no la hora. Si se tomara la medianoche, una
+            # noticia publicada justo en el límite del rango (ej. hace
+            # exactamente 7 días, por la tarde) quedaría fuera por unas
+            # horas que el dato nunca tuvo. Al asumir el último instante
+            # del día, la duda juega a favor de conservar la noticia.
+            return datetime(anio, mes, dia, 23, 59, 59, tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _anio_antiguo_en(texto: str, anio_corte: int) -> Optional[int]:
+    """
+    Devuelve el primer año <= anio_corte que aparezca como token
+    independiente en el texto, o None si no hay ninguno. Se exige que
+    no esté pegado a otros dígitos, para no confundir un año con parte
+    de una cifra (ej. "32954" no contiene el año 3295).
+    """
+    for match in re.finditer(r"(?<!\d)((?:19|20)\d{2})(?!\d)", texto):
+        anio = int(match.group(1))
+        if anio <= anio_corte:
+            return anio
+    return None
+
+
+def _parece_archivo_antiguo(item: Dict) -> bool:
+    """
+    Detecta páginas de archivo que Google fecha como recientes.
+
+    CASO REAL (29-sep-2026, Guatemala): SerpAPI devolvió
+    "Conversatorio-UNOPS-IGSS-Guatemala-2018-2"
+    (igssgt.org/noticias/conversatorio-unops-igss-guatemala-2018-2/)
+    con date="hace 6 días". No era una noticia: era la página de una
+    FOTO de un evento de 2018, sin fecha propia, que Google fechó por
+    la fecha de rastreo. Ningún filtro de fecha podía atraparla, porque
+    el dato de fecha que llegaba era falso en origen.
+
+    La evidencia real estaba en otro lado, y es la que se usa aquí:
+
+    1. AÑO ANTIGUO en el título o en la ruta de la URL, sin ningún año
+       reciente que lo acompañe. "…-guatemala-2018-2" delata el archivo.
+       Se exige la ausencia de año reciente para no castigar titulares
+       legítimos como "Comparativa de pensiones 2018-2026" ni
+       "…analizar el PPEF 2027".
+
+    2. TÍTULO CON FORMA DE NOMBRE DE ARCHIVO: sin espacios y con
+       guiones, como el de la foto. Un titular de prensa real siempre
+       lleva espacios. Esto atrapa adjuntos, galerías y PDFs sueltos
+       aunque no mencionen ningún año.
+
+    Solo mira el título y la URL, nunca el snippet: en el cuerpo de una
+    noticia actual es normal citar años pasados ("desde 2018…"), y
+    mirarlo ahí produciría falsos positivos constantes.
+    """
+    titulo = (item.get("title") or "").strip()
+    link = item.get("link") or ""
+    anio_actual = datetime.now(timezone.utc).year
+
+    # Regla 2: título con forma de nombre de archivo.
+    if titulo and " " not in titulo and titulo.count("-") >= 2:
+        return True
+
+    # Regla 1: año antiguo sin año reciente que lo contextualice.
+    # Se toma la ruta de la URL sin el dominio: un dominio puede
+    # contener cifras que no son años (ej. crc891.com).
+    ruta = re.sub(r"^https?://[^/]+", "", link)
+    texto = f"{titulo} {ruta}"
+    anio_antiguo = _anio_antiguo_en(texto, anio_actual - 2)
+    if anio_antiguo is None:
+        return False
+    hay_anio_reciente = re.search(
+        rf"(?<!\d)({anio_actual}|{anio_actual - 1})(?!\d)", texto
+    )
+    return not hay_anio_reciente
+
+
 def _dentro_del_rango(item: Dict, dias_maximos: int) -> bool:
     """
     Filtro de respaldo en Python: True si la noticia está dentro del
-    rango de antigüedad permitido, o si su fecha no se pudo determinar
-    (en ese caso se deja pasar, para no descartar de más por un
-    formato de fecha inesperado).
+    rango de antigüedad permitido.
+
+    Orden de confianza de las fuentes de fecha, de mayor a menor:
+
+    1. La fecha incrustada en la URL, si existe. Es la que puso el
+       propio medio al publicar y no depende del criterio de Google.
+    2. El campo de fecha de SerpAPI (absoluto o relativo).
+    3. Las señales de archivo antiguo (_parece_archivo_antiguo), que
+       actúan cuando las dos anteriores no bastan o mienten.
+
+    Si no se puede determinar la fecha por ningún medio, la noticia se
+    deja pasar, para no descartar de más por un formato inesperado —
+    pero la revisión de archivo antiguo se aplica igual.
     """
+    limite = datetime.now(timezone.utc) - timedelta(days=dias_maximos)
+
+    # 1. La URL manda sobre lo que diga Google.
+    fecha_url = _fecha_desde_url(item.get("link", ""))
+    if fecha_url is not None:
+        return fecha_url >= limite
+
+    # 3. Sin fecha en la URL, las señales de archivo pesan: una página
+    #    de 2018 que Google fecha como de esta semana se descarta aquí.
+    if _parece_archivo_antiguo(item):
+        return False
+
+    # 2. Fecha reportada por SerpAPI.
     fecha = _parsear_fecha_serpapi(item)
     if fecha is None:
         return True
-    limite = datetime.now(timezone.utc) - timedelta(days=dias_maximos)
     return fecha >= limite
 
 
@@ -730,10 +876,15 @@ def _buscar_una_vez(
     #  - dominio curado de OTRO país (certeza total del país real: si
     #    diariolibre.com está curado para República Dominicana, una
     #    noticia suya nunca pertenece al reporte de Haití).
+    #  - publicada en un dominio nacional de otro país sin nombrar ni
+    #    una vez al país buscado (ver _es_de_otro_pais_con_certeza): el
+    #    verificador LLM cae en las mismas trampas de topónimo que los
+    #    filtros de texto, así que este caso no puede quedar a su juicio.
     noticias_crudas = [
         item for item in noticias_crudas
         if _dentro_del_rango(item, dias_maximos_antiguedad)
         and not _dominio_curado_de_otro_pais(item, pais)
+        and not _es_de_otro_pais_con_certeza(item, pais)
     ]
 
     def _convertir(item: Dict) -> Dict:
@@ -806,7 +957,7 @@ def _buscar_una_vez(
     }
 
 
-def buscar_noticias_pais(
+def _buscar_prensa_pais(
     pais: str,
     api_key: str,
     terminos: Optional[List[str]] = None,
@@ -816,8 +967,11 @@ def buscar_noticias_pais(
     n_noticias_necesarias: int = 5,
 ) -> Dict:
     """
-    Busca noticias recientes para un país usando SerpAPI, con una
-    estrategia en capas:
+    Busca noticias recientes de PRENSA para un país usando SerpAPI, con
+    una estrategia en capas. El punto de entrada público es
+    buscar_noticias_pais, que además incorpora la fuente CEPAL/ReDeSoc.
+
+    Estrategia:
 
     1. PRINCIPAL — query con "site:" restringido a medios reales del
        país (ver SITIOS_PAIS / construir_query_site). Elimina
@@ -936,6 +1090,131 @@ def buscar_noticias_pais(
     }
 
 
+# Cuántas noticias de CEPAL/ReDeSoc pueden encabezar la sección de un
+# país. Se limita a 2 a propósito: la CEPAL es la fuente más autorizada
+# del reporte, pero el objetivo del monitoreo es la prensa nacional. Sin
+# tope, una semana activa de ReDeSoc podría copar las 5 posiciones de un
+# país y borrar la cobertura local, que es justo lo que se quiere ver.
+MAX_NOTICIAS_CEPAL_POR_PAIS = 2
+
+
+def buscar_noticias_pais(
+    pais: str,
+    api_key: str,
+    terminos: Optional[List[str]] = None,
+    max_resultados: int = 10,
+    rango_tiempo: str = "qdr:w",
+    dias_maximos_antiguedad: int = DIAS_MAXIMOS_ANTIGUEDAD,
+    n_noticias_necesarias: int = 5,
+    incluir_cepal: bool = True,
+) -> Dict:
+    """
+    Punto de entrada del Agente 1. Combina DOS fuentes:
+
+    A. CEPAL / ReDeSoc (cepal.py) — la Red de Desarrollo Social de la
+       propia CEPAL, leída por RSS. Es la fuente más autorizada del
+       reporte y no gasta cuota de SerpAPI, así que va PRIMERO y sus
+       noticias encabezan la sección de cada país (con tope, ver
+       MAX_NOTICIAS_CEPAL_POR_PAIS).
+
+       Por qué hace falta un módulo aparte y no bastaba la palabra
+       "CEPAL" en los términos de búsqueda: la capa 1 restringe con
+       site: a medios de prensa nacionales, donde cepal.org no encaja
+       —es un organismo regional—, y la búsqueda usa la pestaña de
+       Noticias de Google, que no indexa páginas institucionales sin
+       fecha. El término "CEPAL protección social" nunca pudo traer
+       nada de la CEPAL; solo alargaba la consulta.
+
+    B. Prensa nacional vía SerpAPI (_buscar_prensa_pais), con la
+       estrategia en capas de siempre.
+
+    La sección regional SECCION_CEPAL se sirve SOLO de la fuente A y no
+    consulta SerpAPI en absoluto, así que no consume cuota.
+
+    Si ReDeSoc no responde, esta función se comporta exactamente como
+    antes: devuelve la prensa nacional y nada más. La fuente CEPAL
+    nunca puede hacer fallar un reporte.
+    """
+    try:
+        from cepal import (
+            SECCION_CEPAL,
+            formatear_para_reporte,
+            item_es_del_pais,
+            obtener_items_redesoc,
+        )
+    except Exception:
+        SECCION_CEPAL = None
+        incluir_cepal = False
+
+    noticias_cepal: List[Dict] = []
+    if incluir_cepal:
+        try:
+            items = obtener_items_redesoc(dias_maximos=dias_maximos_antiguedad)
+            if pais == SECCION_CEPAL:
+                # Sección regional: todo lo que NO pertenezca a ninguno
+                # de los 10 países, para no duplicar lo que ya aparece
+                # en sus secciones. Aquí caen los informes regionales,
+                # los seminarios y las notas comparativas, que es
+                # precisamente el material propio de la CEPAL.
+                seleccion = [
+                    item for item in items
+                    if not any(
+                        item_es_del_pais(item, p, DEMONIMOS_PAIS) for p in PAISES
+                    )
+                ]
+            else:
+                seleccion = [
+                    item for item in items
+                    if item_es_del_pais(item, pais, DEMONIMOS_PAIS)
+                ][:MAX_NOTICIAS_CEPAL_POR_PAIS]
+
+            noticias_cepal = [
+                {"pais": pais, **formatear_para_reporte(item)}
+                for item in seleccion
+            ]
+        except Exception:
+            noticias_cepal = []
+
+    # La sección regional no busca prensa: no tiene medios nacionales
+    # que consultar y gastaría cuota de SerpAPI para nada.
+    if SECCION_CEPAL is not None and pais == SECCION_CEPAL:
+        return {
+            "aceptadas": noticias_cepal[:max_resultados],
+            "descartadas_marginales": [],
+            "error": None,
+        }
+
+    resultado = _buscar_prensa_pais(
+        pais=pais,
+        api_key=api_key,
+        terminos=terminos,
+        max_resultados=max_resultados,
+        rango_tiempo=rango_tiempo,
+        dias_maximos_antiguedad=dias_maximos_antiguedad,
+        n_noticias_necesarias=n_noticias_necesarias,
+    )
+
+    if not noticias_cepal:
+        return resultado
+
+    # Si SerpAPI falló pero ReDeSoc respondió, el país ya no queda
+    # vacío: se entrega lo de la CEPAL y se deja de reportar el error,
+    # porque el reporte sí tiene contenido verificable para ese país.
+    if resultado.get("error") is not None:
+        return {
+            "aceptadas": noticias_cepal[:max_resultados],
+            "descartadas_marginales": [],
+            "error": None,
+        }
+
+    combinadas = deduplicar_noticias(noticias_cepal + resultado["aceptadas"])
+    return {
+        "aceptadas": combinadas[:max_resultados],
+        "descartadas_marginales": resultado["descartadas_marginales"],
+        "error": None,
+    }
+
+
 def _extraer_fuente(item: Dict) -> str:
     """SerpAPI a veces anida la fuente en 'source': {'name': ...}."""
     source = item.get("source")
@@ -1005,6 +1284,37 @@ SUBDIVISIONES_DE_RIESGO_CONFIRMADAS = {
     "comunidad de madrid": "España",
     "castilla-la mancha": "España",
     "extremadura": "España",
+
+    # ---------------------------------------------------------------
+    # Marcadores de los topónimos que se llaman EXACTAMENTE igual que un
+    # país del proyecto (29-sep-2026).
+    # ---------------------------------------------------------------
+    # Estos no se pueden enmascarar como los de TOPONIMOS_HOMONIMOS: el
+    # lugar se llama literalmente "El Salvador" o "Costa Rica", así que
+    # borrar esa cadena rompería también las menciones legítimas. Lo que
+    # sí es inequívoco es el territorio que los rodea, y eso es lo que
+    # se registra aquí. Verificado con fuentes.
+    "diego de almagro": "Chile",   # comuna del pueblo minero "El Salvador", Atacama
+    "codelco": "Chile",            # opera la División Salvador
+    "atacama": "Chile",
+    "guantánamo": "Cuba",          # municipio "El Salvador", Guantánamo
+    "guantanamo": "Cuba",
+    "mayarí": "Cuba",              # localidad "Guatemala", Holguín
+    "holguín": "Cuba",
+    "zacatecas": "México",         # municipio "El Salvador", Zacatecas
+    "culiacán": "México",          # sindicatura "Costa Rica", Culiacán
+    "culiacan": "México",
+    "sinaloa": "México",
+    "pereira": "Colombia",         # comuna "Cuba", Pereira
+    "risaralda": "Colombia",
+    "el tambo": "Colombia",        # corregimiento "Honduras", Cauca
+    "cauca": "Colombia",
+    "arauquita": "Colombia",       # corregimiento "Panamá de Arauca"
+    "mato grosso": "Brasil",       # municipio "Costa Rica", Mato Grosso do Sul
+    "goiás": "Brasil",             # municipio "Panamá", Goiás
+    "misamis oriental": "Filipinas",   # "El Salvador City"
+    "cagayán de oro": "Filipinas",
+    "pampanga": "Filipinas",       # municipio "Mexico", Pampanga
 }
 
 # Señales textuales que delatan el país real de una noticia aunque el
@@ -1172,12 +1482,101 @@ _NOMBRES_ALTERNOS_PAIS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# TOPÓNIMOS HOMÓNIMOS: lugares de OTROS países cuyo nombre CONTIENE el
+# nombre de un país del proyecto.
+# ---------------------------------------------------------------------------
+# Problema de fondo, confirmado el 29-sep-2026: en el reporte de El
+# Salvador entró "Emprendedoras de Ate y VES logran incentivos por
+# S/ 65,000" (Agencia Andina, andina.pe), una nota de PERÚ. El texto
+# hablaba de "Villa El Salvador", que es un distrito de Lima de unos
+# 400.000 habitantes. El filtro _menciona_el_pais buscaba "el salvador"
+# como palabra completa y lo encontraba —dentro del nombre de otro
+# lugar—, así que la nota pasaba la prueba de país.
+#
+# Es un fallo de clase, no un caso aislado: "Nuevo México" es un estado
+# de Estados Unidos, "Panama City" está en Florida, hay una comuna
+# llamada Cuba en Pereira (Colombia) y un corregimiento llamado Honduras
+# en el Cauca (Colombia). Por eso no se corrige añadiendo "Villa El
+# Salvador" a una lista de exclusión, sino ENMASCARANDO el topónimo
+# antes de buscar el nombre del país: donde el texto diga "Villa El
+# Salvador" ya no queda ningún "El Salvador" que encontrar.
+#
+# El enmascarado es superior a excluir la noticia entera porque no
+# pierde las menciones legítimas: una nota que hable de "Villa El
+# Salvador" Y de "El Salvador" conserva la segunda mención, que sí
+# cuenta como evidencia.
+#
+# Solo entran aquí topónimos en los que el nombre del país aparece
+# dentro de una expresión MÁS LARGA e inequívoca. Los casos en que el
+# topónimo se llama exactamente igual que el país (el municipio El
+# Salvador de Guantánamo, en Cuba; la sindicatura Costa Rica de
+# Culiacán, en México) no se pueden enmascarar sin romper las menciones
+# reales: esos se detectan por sus marcadores geográficos, en
+# SUBDIVISIONES_DE_RIESGO_CONFIRMADAS.
+#
+# Verificado con fuentes el 29-sep-2026. Mapeo: topónimo -> país real.
+TOPONIMOS_HOMONIMOS = {
+    # El Salvador
+    "villa el salvador": "Perú",          # distrito de Lima (~400.000 hab.) — CASO CONFIRMADO
+    "el salvador city": "Filipinas",      # Misamis Oriental
+    # México
+    "nuevo méxico": "Estados Unidos",
+    "nuevo mexico": "Estados Unidos",
+    "new mexico": "Estados Unidos",
+    # Panamá
+    "panama city": "Estados Unidos",      # Florida (la capital real es "Ciudad de Panamá")
+    "panamá de arauca": "Colombia",       # corregimiento de Arauquita
+    # Cuba
+    "cuba street": "Nueva Zelanda",       # calle célebre de Wellington
+    "barrio cuba": "Colombia",            # comuna 19 de Pereira
+    "comuna cuba": "Colombia",
+}
+
+# Se enmascaran primero los más largos, para que un topónimo contenido
+# en otro no se coma al mayor.
+_TOPONIMOS_ORDENADOS = sorted(TOPONIMOS_HOMONIMOS, key=len, reverse=True)
+
+# Marcador sin ningún nombre de país dentro, para no crear coincidencias
+# nuevas al sustituir.
+_MARCA_TOPONIMO = " toponimohomonimo "
+
+
+def _enmascarar_toponimos(texto_lower: str):
+    """
+    Sustituye en el texto los topónimos homónimos por un marcador neutro.
+
+    Devuelve (texto_enmascarado, países_delatados), donde
+    países_delatados son los países REALES a los que pertenecen los
+    topónimos encontrados. Ese segundo valor importa tanto como el
+    primero: "Villa El Salvador" no solo deja de ser evidencia de El
+    Salvador, además es evidencia positiva de que la noticia es de Perú.
+    """
+    delatados = set()
+    for toponimo in _TOPONIMOS_ORDENADOS:
+        patron = r"\b" + re.escape(toponimo) + r"\b"
+        if re.search(patron, texto_lower):
+            delatados.add(TOPONIMOS_HOMONIMOS[toponimo])
+            texto_lower = re.sub(patron, _MARCA_TOPONIMO, texto_lower)
+    return texto_lower, delatados
+
+
+def _texto_de_pais(item: Dict):
+    """Texto normalizado y enmascarado que usan todos los filtros de país."""
+    crudo = f"{item.get('title', '')} {item.get('snippet', '')}".lower()
+    return _enmascarar_toponimos(crudo)
+
+
 def _menciona_el_pais(item: Dict, pais_buscado: str) -> bool:
     """
     True si el título o snippet nombra explícitamente al país buscado,
     por su nombre, su demónimo o alguna variante habitual en prensa.
+
+    Se busca sobre el texto CON LOS TOPÓNIMOS HOMÓNIMOS ENMASCARADOS
+    (ver TOPONIMOS_HOMONIMOS): el nombre de un país dentro del nombre de
+    otro lugar no prueba nada sobre el origen de la noticia.
     """
-    texto = f"{item.get('title', '')} {item.get('snippet', '')}".lower()
+    texto, _ = _texto_de_pais(item)
     candidatos = (
         [pais_buscado.lower()]
         + [d.lower() for d in DEMONIMOS_PAIS.get(pais_buscado, [])]
@@ -1187,6 +1586,37 @@ def _menciona_el_pais(item: Dict, pais_buscado: str) -> bool:
         re.search(r"\b" + re.escape(c) + r"\b", texto)
         for c in candidatos
     )
+
+
+def _es_de_otro_pais_con_certeza(item: Dict, pais_buscado: str) -> bool:
+    """
+    Descarte DURO: la noticia se publicó en un dominio nacional de otro
+    país Y su texto no nombra al país buscado ni una sola vez.
+
+    Por qué hace falta, y por qué no bastaba marcarla como marginal.
+    La nota peruana que entró en El Salvador el 29-sep-2026 SÍ estaba
+    marcada como marginal: su TLD es .pe y _dominio_de_otro_pais la
+    detectó. Llegó al reporte porque El Salvador se quedó corto de
+    noticias, el verificador de Groq revisó las marginales, leyó "Villa
+    El Salvador" en el título y respondió que sí era relevante.
+
+    Es decir: el verificador cae en la misma trampa del topónimo que
+    los filtros de texto, y por diseño puede rescatar cualquier
+    marginal. Así que la defensa no puede estar solo ahí. Cuando el
+    dominio nacional dice un país y el texto no nombra el buscado
+    NINGUNA vez —ya descontados los topónimos homónimos—, no es un caso
+    dudoso que convenga que un modelo juzgue: es una certeza.
+
+    No se descarta en duro por TLD a secas, porque sería demasiado:
+    la prensa mexicana cubre Centroamérica y una nota de un medio .mx
+    sobre el IGSS de Guatemala es legítima. Esa sí nombra a Guatemala,
+    así que sobrevive como marginal y el verificador puede rescatarla.
+    """
+    if _es_dominio_curado_del_pais(item, pais_buscado):
+        return False  # medio curado del propio país: certeza en contra
+    if not _dominio_de_otro_pais(item, pais_buscado):
+        return False
+    return not _menciona_el_pais(item, pais_buscado)
 
 
 def _dominio_curado_de_otro_pais(item: Dict, pais_buscado: str) -> bool:

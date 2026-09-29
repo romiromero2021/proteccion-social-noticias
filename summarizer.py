@@ -245,6 +245,22 @@ def _llamar_groq_con_reintentos(
     return None, ultimo_error
 
 
+def _ambito_geografico(pais: str) -> str:
+    """
+    Traduce el nombre de una sección del reporte al ámbito geográfico
+    que hay que nombrar dentro de un prompt.
+
+    Casi siempre son lo mismo. La excepción es la sección regional de
+    la CEPAL, cuyo título ("CEPAL (regional)") es el nombre de una
+    sección, no de un lugar: pedirle al modelo que resuma "una noticia
+    de CEPAL (regional)" produce redacciones raras y verificaciones sin
+    sentido. Para esa sección el ámbito real es la región entera.
+    """
+    if pais.strip().upper().startswith("CEPAL"):
+        return "América Latina y el Caribe"
+    return pais
+
+
 def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key: str) -> bool:
     """
     Agente verificador (Capa 3 de la estrategia híbrida) — usa Groq
@@ -274,17 +290,18 @@ def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key:
     True solo si Groq confirma la relevancia explícitamente; False si la
     niega o si el verificador no pudo ejecutarse.
     """
+    ambito = _ambito_geografico(pais)
     prompt = (
-        f"Eres un verificador estricto de relevancia temática para {pais}.\n\n"
+        f"Eres un verificador estricto de relevancia temática para {ambito}.\n\n"
         f"Título: {titulo}\n"
         f"Extracto: {snippet}\n\n"
         f"Pregunta: ¿Esta noticia trata genuinamente sobre programas, "
         f"políticas o instituciones PÚBLICAS de protección social, "
         f"seguridad social, asistencia social o desarrollo social "
-        f"DE {pais}?\n\n"
+        f"DE {ambito}?\n\n"
         f"Responde NO si se cumple cualquiera de estos casos:\n"
         f"- La noticia es de otro país o sobre otro país (aunque el "
-        f"evento ocurra físicamente en {pais}).\n"
+        f"evento ocurra físicamente en {ambito}).\n"
         f"- Es caridad puntual, donaciones o colectas de entidades "
         f"privadas (empresas, clubes, fundaciones, iglesias), no un "
         f"programa o política pública de protección social.\n"
@@ -293,7 +310,21 @@ def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key:
         f"- Es sobre loterías, sorteos, deportes, farándula o política "
         f"general sin relación directa con estos programas.\n"
         f"- Solo menciona una institución de protección social de "
-        f"forma tangencial, sin que sea el tema central.\n\n"
+        f"forma tangencial, sin que sea el tema central.\n"
+        # Regla añadida el 29-sep-2026. Una nota peruana sobre "Villa El
+        # Salvador" (distrito de Lima) fue aprobada por el verificador
+        # para el reporte de El Salvador: leyó el nombre del país dentro
+        # del nombre de otro lugar y lo dio por bueno. El filtro de texto
+        # ya enmascara estos topónimos, pero el verificador necesita la
+        # regla explícita, porque su trabajo es justo revisar los casos
+        # que los filtros no resolvieron.
+        f"- El nombre del país aparece solo DENTRO del nombre de otro "
+        f"lugar, que está en otro país. Ejemplos: \"Villa El Salvador\" "
+        f"es un distrito de Lima, Perú; \"Nuevo México\" es un estado de "
+        f"Estados Unidos; \"Panama City\" está en Florida. Un topónimo "
+        f"así NO hace que la noticia sea de {ambito}. Fíjate en pistas "
+        f"como la moneda, las instituciones citadas y las ciudades "
+        f"mencionadas para saber de qué país es realmente.\n\n"
         f"Responde ÚNICAMENTE con una palabra: SI o NO."
     )
 
@@ -329,11 +360,12 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
     en la UI por defecto, pero permite diagnosticar fallas reales en vez
     de ocultarlas silenciosamente).
     """
+    ambito = _ambito_geografico(pais)
     prompt = (
         "Eres un analista de políticas públicas. Redacta un resumen breve "
         "(máximo 3 frases, en español neutro, tono informativo y objetivo) "
         "de la siguiente noticia sobre programas de protección social en "
-        f"{pais}.\n\n"
+        f"{ambito}.\n\n"
         f"Título: {titulo}\n"
         f"Extracto original: {snippet}\n\n"
         "Instrucciones importantes:\n"

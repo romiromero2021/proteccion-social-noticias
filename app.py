@@ -25,6 +25,14 @@ from datetime import datetime
 from cache import _ahora
 
 from scraper import buscar_noticias_pais, PAISES, TERMINOS_TEMATICOS
+from cepal import SECCION_CEPAL, URL_REDESOC
+
+# Secciones del reporte = los 10 países + la sección regional de la
+# CEPAL. Se mantiene PAISES aparte porque sigue siendo la lista de
+# países monitoreados (es lo que se muestra en el panel lateral y lo
+# que usan los filtros del scraper); SECCIONES es lo que se recorre
+# para procesar, mostrar pestañas y armar el documento.
+SECCIONES = PAISES + [SECCION_CEPAL]
 from summarizer import procesar_pais, generar_documento_word, modelo_en_uso
 import cache
 
@@ -118,6 +126,11 @@ with st.sidebar:
     st.divider()
     st.caption(f"Países cubiertos ({len(PAISES)}):")
     st.caption(", ".join(PAISES))
+    st.caption(
+        f"Fuente regional adicional: **{SECCION_CEPAL}** — "
+        f"[ReDeSoc, División de Desarrollo Social de la CEPAL]({URL_REDESOC}). "
+        "Se lee directamente por RSS: no consume cuota de SerpAPI."
+    )
     st.caption(f"Términos de búsqueda: *{', '.join(TERMINOS_TEMATICOS)}*")
     st.caption(f"Modelo de IA en uso: `{modelo_en_uso()}`")
 
@@ -180,9 +193,9 @@ with col1:
 
 if ejecutar_todos:
     progreso = st.progress(0, text="Iniciando...")
-    total = len(PAISES)
+    total = len(SECCIONES)
 
-    for i, pais in enumerate(PAISES):
+    for i, pais in enumerate(SECCIONES):
         progreso.progress(i / total, text=f"Procesando {pais}... ({i + 1}/{total})")
         st.session_state.reportes[pais] = procesar_un_pais(pais, forzar=False)
 
@@ -202,9 +215,9 @@ if st.session_state.reportes:
         "de un país específico sin afectar a los demás."
     )
 
-    tabs = st.tabs(PAISES)
+    tabs = st.tabs(SECCIONES)
 
-    for tab, pais in zip(tabs, PAISES):
+    for tab, pais in zip(tabs, SECCIONES):
         with tab:
             reporte = st.session_state.reportes.get(pais)
 
@@ -278,8 +291,8 @@ if st.session_state.reportes:
     # ya sea de caché o recién generados)
     # -----------------------------------------------------------------
     st.divider()
-    paises_listos = [p for p in PAISES if st.session_state.reportes.get(p) is not None]
-    paises_faltantes = [p for p in PAISES if p not in paises_listos]
+    paises_listos = [p for p in SECCIONES if st.session_state.reportes.get(p) is not None]
+    paises_faltantes = [p for p in SECCIONES if p not in paises_listos]
 
     if paises_faltantes:
         st.warning(
@@ -306,7 +319,7 @@ if st.session_state.reportes:
     if reportes_para_docx:
         docx_buffer = generar_documento_word(reportes_para_docx)
         st.download_button(
-            label=f"⬇️ Descargar documento Word ({len(paises_listos)}/{len(PAISES)} países)",
+            label=f"⬇️ Descargar documento Word ({len(paises_listos)}/{len(SECCIONES)} secciones)",
             data=docx_buffer,
             file_name=f"reporte_proteccion_social_{fecha_hoy}.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
