@@ -56,6 +56,7 @@ No interpreta ni resume nada — esa es responsabilidad del Agente 2.
 
 import re
 import time
+import unicodedata
 import requests
 from datetime import datetime, timedelta, timezone
 
@@ -64,6 +65,12 @@ from typing import List, Dict, Optional
 from urllib.parse import urlparse
 
 SERPAPI_ENDPOINT = "https://serpapi.com/search"
+
+
+def _quitar_tildes(texto: str) -> str:
+    """Normaliza un texto quitándole los diacríticos."""
+    descompuesto = unicodedata.normalize("NFKD", texto or "")
+    return "".join(c for c in descompuesto if not unicodedata.combining(c))
 
 PAISES = [
     "Costa Rica",
@@ -696,7 +703,55 @@ def _parsear_fecha_serpapi(item: Dict) -> Optional[datetime]:
     if re.search(r"hace|ago|hour|minute|hora|minuto", publicado, re.IGNORECASE):
         return datetime.now(timezone.utc)
 
+    # Caso 4: fecha con el mes en letra, "23 sept 2026" o "Sep 23, 2026".
+    # Es el formato habitual de los resultados WEB (organic_results),
+    # que es lo que devuelve la sección de la CEPAL. Sin este caso, sus
+    # fechas no se interpretaban y el filtro de antigüedad las dejaba
+    # pasar todas por defecto, incluidas páginas de hace años.
+    fecha_con_mes = _parsear_fecha_con_mes_en_letra(publicado)
+    if fecha_con_mes is not None:
+        return fecha_con_mes
+
     return None
+
+
+# Meses en español e inglés, por sus primeras tres letras sin tilde.
+_MESES_POR_ABREVIATURA = {
+    "ene": 1, "jan": 1, "feb": 2, "mar": 3, "abr": 4, "apr": 4,
+    "may": 5, "jun": 6, "jul": 7, "ago": 8, "aug": 8,
+    "sep": 9, "set": 9, "oct": 10, "nov": 11, "dic": 12, "dec": 12,
+}
+
+
+def _parsear_fecha_con_mes_en_letra(texto: str) -> Optional[datetime]:
+    """
+    Interpreta fechas con el mes escrito: "23 sept 2026", "Sep 23,
+    2026", "23 de septiembre de 2026". Devuelve el final del día, por
+    el mismo motivo que _fecha_desde_url: el dato no tiene hora, y la
+    duda debe jugar a favor de conservar la noticia.
+    """
+    if not texto:
+        return None
+    limpio = _quitar_tildes(texto.lower())
+
+    # "23 sept 2026" / "23 de septiembre de 2026"
+    m = re.search(r"\b(\d{1,2})\s+(?:de\s+)?([a-z]{3})[a-z.]*\s+(?:de\s+)?(\d{4})\b", limpio)
+    if not m:
+        # "sep 23, 2026"
+        m = re.search(r"\b([a-z]{3})[a-z.]*\s+(\d{1,2}),?\s+(\d{4})\b", limpio)
+        if not m:
+            return None
+        mes_txt, dia, anio = m.group(1), m.group(2), m.group(3)
+    else:
+        dia, mes_txt, anio = m.group(1), m.group(2), m.group(3)
+
+    mes = _MESES_POR_ABREVIATURA.get(mes_txt)
+    if mes is None:
+        return None
+    try:
+        return datetime(int(anio), mes, int(dia), 23, 59, 59, tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 # Patrones de fecha incrustada en la URL. Casi todos los gestores de
@@ -911,9 +966,25 @@ def _buscar_una_vez(
     rango_tiempo: str,
     max_resultados: int,
     dias_maximos_antiguedad: int,
+    buscar_en_noticias: bool = True,
 ) -> Dict:
     """
     Ejecuta una sola consulta a SerpAPI con un rango de tiempo dado.
+
+    buscar_en_noticias : si True (por defecto) se consulta la pestaña
+        de Noticias de Google (tbm=nws); si False, la búsqueda web
+        normal, que devuelve organic_results.
+
+        Cuándo ponerlo en False: cuando el sitio que se busca NO es un
+        medio de prensa. Confirmado el 29-sep-2026 con la sección de la
+        CEPAL: `tbm=nws` + `site:cepal.org` agotó el tiempo de espera
+        (25 s, dos intentos), mientras los 10 países respondían bien.
+        No era cuestión de longitud —la consulta de la CEPAL es la más
+        CORTA de todas, 173 caracteres frente a 430 de Haití—, sino de
+        que se le estaba pidiendo a Google NOTICIAS un dominio que no
+        indexa como prensa. Es la misma familia de fallo que la
+        incidencia de SerpAPI del 20-sep-2026 ("requests timing out
+        while using tbm=nws with advanced parameters").
 
     El filtro de FECHA se aplica de forma estricta (sin ambigüedad: una
     noticia más vieja que el límite nunca se acepta). Los otros 4
@@ -937,13 +1008,14 @@ def _buscar_una_vez(
 
     params = {
         "engine": "google",
-        "tbm": "nws",
         "q": query,
         "gl": _codigo_pais(pais),
         "hl": idioma_busqueda,
         "tbs": rango_tiempo,
         "api_key": api_key,
     }
+    if buscar_en_noticias:
+        params["tbm"] = "nws"
 
     # Reintento ante fallos transitorios de red. Confirmado en producción:
     # República Dominicana falló con "Read timed out (read timeout=20)" y se
@@ -1015,7 +1087,12 @@ def _buscar_una_vez(
             item for item in data.get("organic_results", [])
             if item.get("date")
         ]
-        es_respaldo_web = bool(noticias_crudas)
+        # Solo es "respaldo" —y por tanto evidencia de segunda que debe
+        # revisar el verificador— cuando se pidió la pestaña de
+        # Noticias y Google contestó con resultados web. Si la búsqueda
+        # web era justo lo que se pidió (sección de la CEPAL), sus
+        # resultados son la fuente normal, no un sucedáneo.
+        es_respaldo_web = bool(noticias_crudas) and buscar_en_noticias
 
     # Filtros DUROS, sin clasificar — estas noticias jamás llegan ni
     # siquiera a descartadas_marginales, porque el verificador LLM no
@@ -1309,9 +1386,13 @@ def buscar_noticias_pais(
     día salió con la sección vacía. El detalle está en cepal.py.
     """
     if pais == SECCION_CEPAL:
+        # Búsqueda WEB, no de Noticias: cepal.org no es un medio de
+        # prensa y pedirlo en la pestaña de Noticias agota el tiempo de
+        # espera (ver buscar_en_noticias en _buscar_una_vez).
         resultado = _buscar_una_vez(
             pais, api_key, construir_query_cepal(),
             rango_tiempo, max_resultados, dias_maximos_antiguedad,
+            buscar_en_noticias=False,
         )
         # Igual que los países: si una semana no trae nada, se reintenta
         # con dos semanas antes de declarar la sección vacía. La CEPAL
@@ -1321,6 +1402,7 @@ def buscar_noticias_pais(
             resultado_2sem = _buscar_una_vez(
                 pais, api_key, construir_query_cepal(),
                 "qdr:w2", max_resultados, dias_maximos_antiguedad=14,
+                buscar_en_noticias=False,
             )
             if resultado_2sem["error"] is None:
                 resultado_2sem["descartadas_marginales"] = (
@@ -1342,11 +1424,28 @@ def buscar_noticias_pais(
 
 
 def _extraer_fuente(item: Dict) -> str:
-    """SerpAPI a veces anida la fuente en 'source': {'name': ...}."""
+    """
+    Nombre del medio. SerpAPI a veces lo anida en 'source': {'name':...}.
+
+    Los resultados WEB (organic_results), que es lo que devuelve la
+    sección de la CEPAL, con frecuencia no traen 'source'. Antes eso
+    salía en el reporte como "Fuente desconocida", que para una nota de
+    la propia CEPAL queda muy mal. Ahora, si falta, se deduce del
+    dominio del enlace.
+    """
     source = item.get("source")
-    if isinstance(source, dict):
-        return source.get("name", "Fuente desconocida")
-    return source or "Fuente desconocida"
+    if isinstance(source, dict) and source.get("name"):
+        return source["name"]
+    if isinstance(source, str) and source.strip():
+        return source
+
+    link = item.get("link") or ""
+    dominio = urlparse(link).netloc.lower()
+    if dominio.startswith("www."):
+        dominio = dominio[4:]
+    if dominio.endswith("cepal.org"):
+        return "CEPAL"
+    return dominio or "Fuente desconocida"
 
 
 def _codigo_pais(pais: str) -> str:

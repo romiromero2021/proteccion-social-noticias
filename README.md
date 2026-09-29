@@ -255,8 +255,32 @@ los filtros de país cruzado no se aplican (ver `_buscar_una_vez`);
 quedan el de fecha y el de tema.
 
 Se busca con SerpAPI restringido a `cepal.org` y `dds.cepal.org`,
-igual que se hace con los medios curados de cada país, así que
-**consume 1 búsqueda por reporte**. Una nota de cepal.org nunca
+así que **consume 1 búsqueda por reporte**. Con una diferencia
+importante respecto a los países: **usa la búsqueda WEB, no la
+pestaña de Noticias de Google**.
+
+Por qué. El 29-sep-2026, con `tbm=nws`, la consulta de la CEPAL agotó
+el tiempo de espera (25 s, dos intentos) mientras los 10 países
+respondían sin problema. No era cuestión de longitud: la consulta de
+la CEPAL es la **más corta** de todas, 173 caracteres frente a los 430
+de Haití. Era que se le estaba pidiendo a Google *Noticias* un dominio
+que no indexa como prensa —cepal.org es un organismo internacional, no
+un periódico—. Es la misma familia de fallo que la incidencia de
+SerpAPI del 20-sep-2026 ("requests timing out while using tbm=nws with
+advanced parameters"). Lo controla el parámetro `buscar_en_noticias`
+de `_buscar_una_vez`.
+
+Ese cambio arrastró dos ajustes más, porque los resultados web no
+vienen igual que los de Noticias:
+
+- **Fechas con el mes en letra** ("23 sept 2026", "Sep 23, 2026"). No
+  se interpretaban, y como una fecha ilegible se deja pasar por
+  defecto, el filtro de antigüedad quedaba desactivado de hecho para
+  esta sección: habrían entrado páginas de hace años. Lo resuelve
+  `_parsear_fecha_con_mes_en_letra`, en español e inglés.
+- **Nombre del medio.** Los resultados web no suelen traer el campo
+  `source`, y las notas salían como "Fuente desconocida". Ahora se
+  deduce del dominio, y las de cepal.org se etiquetan como "CEPAL". Una nota de cepal.org nunca
 aparece en la sección de un país: su dominio pertenece a esta sección.
 
 **Historia, para no repetir el camino** (`cepal.py` la documenta en
