@@ -1,4 +1,4 @@
-# Resumen Diario: Programas de Protección Social (México + CA + Caribe)
+# Resumen Diario: Programas de Protección Social (CA + Caribe)
 
 App con dos agentes que recolectan y resumen noticias diarias sobre
 programas de protección social en Costa Rica, Cuba, El Salvador,
@@ -266,40 +266,81 @@ a la CEPAL se detecta con la palabra clave `cepal` de
 Si alguien quiere reintentarlo, la vía con más futuro es que los feeds
 de ReDeSoc vuelvan a responder (https://dds.cepal.org/redesoc/noticias).
 
-## Cuando el tema está en las palabras pero no en la noticia
+## El editor: cómo se decide qué entra (reescrito el 29-sep-2026)
 
-Dos casos confirmados el 29-sep-2026, con causas distintas:
+Durante semanas el sistema decidía con **listas de palabras clave** y
+solo llamaba al modelo al final, para rescatar dudosas cuando faltaba
+cupo. Un reporte tras otro se colaba algo —loterías, un artículo sobre
+IA, unos desalojos, una fiesta patria, cinco comunicados del IGSS— y
+cada vez se añadía una regla nueva.
 
-**El acto ceremonial.** "Celebra IMSS Veracruz Norte Fiestas Patrias
-2026 en Centro de Seguridad Social Xalapa" pasó todos los filtros con
-holgura, porque "seguridad social" e "IMSS" están literalmente en el
-titular. Y lo están: es el nombre del lugar y el de la institución que
-organiza la fiesta. `_es_evento_ceremonial` detecta ahora los actos
-festivos, ceremoniales y deportivos en el TÍTULO
-(`EVENTOS_CEREMONIALES`) y manda la noticia al verificador en vez de
-aceptarla directo. No se descarta en duro: hay actos que sí son
-noticia del tema —la firma de un convenio en un acto público—, y esa
-distinción necesita criterio.
+Mirando los once fallos juntos apareció el patrón: **casi todos eran el
+sistema rellenando un cupo**, y las reglas eran una lista de
+exclusiones aprendida a golpes que nunca iba a estar completa.
 
-**La cola del verificador.** "Instituciones que persiguen el crimen
-priorizan desalojos frente a otros delitos" entró en Honduras sin
-tener ni una palabra del tema. Había quedado marginal por
-`tema_ausente`, y el verificador la revisó para llenar el quinto hueco
-y dijo que sí.
+La corrección son dos decisiones, y entre las dos **quitan código en
+vez de añadirlo**.
 
-La corrección es de orden, no de exclusión. Cada descarte marginal
-lleva ahora registrado su motivo (`_motivo_marginal`), y el
-verificador las revisa según `PRIORIDAD_MOTIVO_MARGINAL`: **las
-dudosas por país primero, las que no tienen ni una palabra del tema al
-final de la cola**. El verificador juzga bien el país —esa pregunta es
-objetiva— pero ha demostrado ser demasiado generoso con el tema. Al
-prompt se le añadieron además las dos exclusiones explícitas:
-seguridad pública no es seguridad social, y que un acto ocurra en un
-"Centro de Seguridad Social" no convierte la fiesta en noticia.
+### 1. El cupo es un techo, no una meta
 
-**Efecto secundario deseado:** el sistema ahora prefiere entregar
-cuatro noticias buenas antes que cinco con una mala. La presión por
-llenar el cupo era la causa de fondo.
+`n_noticias` era un objetivo que el sistema se esforzaba en alcanzar.
+Ahora es un máximo. Si un país solo tiene dos noticias que valgan, se
+publican dos y el reporte lo dice.
+
+Eso no es una carencia: **es información**. Que un país tenga dos y
+otro cinco dice algo real sobre la cobertura mediática de la protección
+social en cada uno.
+
+### 2. Los filtros deciden el país; el editor decide el tema
+
+Estaba al revés. Se usaban reglas de texto para lo que peor se les da
+—juzgar si una noticia *trata* del tema— y se reservaba para último
+recurso el componente que mejor lo juzga.
+
+Ahora:
+
+- **Los filtros de texto deciden el PAÍS**: dominio curado, nombre del
+  país, topónimos homónimos, TLD, fecha, páginas de índice. Todo eso es
+  objetivo, barato y verificable, y ahí las reglas funcionan bien.
+- **El editor (`puntuar_candidatas`) puntúa el TEMA y el valor
+  noticioso** de *todas* las candidatas, de 0 a 3, con una razón. Se
+  publican las que llegan a `NOTA_MINIMA_PARA_PUBLICAR` (2), ordenadas
+  por nota.
+
+**El lote es lo que lo hace viable.** Puntuar de una en una serían ~120
+llamadas y siete minutos. Metiendo todas las candidatas de un país en
+un solo mensaje son **10 llamadas por reporte**. Y hay un efecto
+secundario que importa más que el ahorro: el modelo ve las candidatas
+**juntas y en competencia** ("de estas ocho, ¿cuáles son las mejores?")
+en vez de una a una con un hueco que llenar, que era exactamente la
+situación que lo volvía complaciente.
+
+**Coste:** ~45 llamadas y ~33.000 fichas por reporte, frente a las
+~22.000 de antes. Unos 4 minutos de API, comparable a la versión
+anterior en sus casos malos.
+
+**Si el editor no responde** (Groq caído, bloqueo de red), no se pierde
+el reporte: se publica lo que aprobaron los filtros, marcado como
+*sin revisar*, y se avisa.
+
+### Lo que esto te da además
+
+Cada noticia lleva su **nota y su razón**, visibles en la app, y hay un
+panel con **lo que se revisó y no se incluyó**, también con su razón.
+La decisión deja de ser una caja negra: se puede comprobar si algo
+bueno se quedó fuera.
+
+Y esas puntuaciones, revisadas por una persona, son exactamente el
+**conjunto etiquetado** que hace falta para evaluar el sistema con
+método (ver la propuesta de evals). El período de prueba produce el
+dataset como subproducto.
+
+### Qué se retiró
+
+`verificar_relevancia_llm` (el verificador de una en una) y
+`_completar_con_verificacion_llm` (el que rellenaba el cupo). Las
+reglas temáticas de texto siguen ahí como señal para ordenar las
+candidatas, pero ya no deciden.
 
 ## Páginas de listado que no son noticias
 

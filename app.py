@@ -244,7 +244,7 @@ DATOS_MIENTRAS_ESPERAS = [
 
 ETIQUETA_ETAPA = {
     "buscando": "Buscando en la prensa",
-    "verificando": "Revisando noticias dudosas",
+    "puntuando": "Valorando la relevancia de las candidatas",
     "resumiendo": "Redactando resúmenes",
 }
 
@@ -408,15 +408,41 @@ if st.session_state.reportes:
             if reporte.get("error_busqueda"):
                 st.error(f"⚠️ Error al consultar SerpAPI para este país: {reporte['error_busqueda']}")
             elif reporte["sin_resultados"]:
-                st.info("No se encontraron noticias relevantes en la última semana (ni en las últimas 2 semanas).")
+                n_desc = len(reporte.get("descartadas", []))
+                if n_desc:
+                    st.info(
+                        f"Se revisaron {n_desc} noticia(s) de este país, pero ninguna "
+                        "trataba de protección social con suficiente centralidad. "
+                        "Puedes ver abajo qué se descartó y por qué."
+                    )
+                else:
+                    st.info("No se encontraron noticias relevantes en la última semana (ni en las últimas 2 semanas).")
             else:
                 for i, noticia in enumerate(reporte["noticias"], start=1):
                     st.markdown(f"**{i}. {noticia['titulo']}**")
                     st.caption(f"Fuente: {noticia['fuente']} | Fecha: {noticia['fecha']}")
                     st.write(noticia["resumen"])
+                    if noticia.get("nota") is not None:
+                        st.caption(f"🎯 Relevancia {noticia['nota']}/3 — {noticia.get('razon','')}")
                     if noticia.get("link"):
                         st.markdown(f"[Ver noticia completa]({noticia['link']})")
                     st.markdown("---")
+
+            # Qué se descartó y por qué. Es lo que hace auditable la
+            # decisión del editor: se puede comprobar si algo bueno se
+            # quedó fuera, y sirve de conjunto etiquetado para evaluar
+            # el sistema más adelante.
+            if reporte.get("descartadas"):
+                with st.expander(
+                    f"🔍 {len(reporte['descartadas'])} noticia(s) revisadas y no incluidas — ver por qué"
+                ):
+                    for d in reporte["descartadas"]:
+                        st.markdown(
+                            f"**{d['nota']}/3** · {d['titulo']}  \n"
+                            f"*{d.get('fuente','')}* — {d.get('razon','')}"
+                        )
+                        if d.get("link"):
+                            st.caption(d["link"])
 
                 if reporte.get("errores_llm"):
                     n_fallidos = len(reporte["errores_llm"])
@@ -497,6 +523,7 @@ if st.session_state.reportes:
             "sin_resultados": r["sin_resultados"],
             "noticias": r["noticias"],
             "error_busqueda": r.get("error_busqueda"),
+            "descartadas": r.get("descartadas", []),
         })
 
     fecha_hoy = _ahora().strftime("%Y-%m-%d")

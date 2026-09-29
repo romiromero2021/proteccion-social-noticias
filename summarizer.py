@@ -10,6 +10,7 @@ documento Word (.docx) con el reporte final.
 """
 
 import io
+import re
 import time
 from datetime import datetime
 from cache import ZONA_HORARIA
@@ -301,96 +302,118 @@ def _llamar_groq_con_reintentos(
     return None, ultimo_error
 
 
-def verificar_relevancia_llm(titulo: str, snippet: str, pais: str, groq_api_key: str) -> bool:
+# ---------------------------------------------------------------------------
+# EDITOR: puntuación por lotes de las candidatas
+# ---------------------------------------------------------------------------
+# Sustituye al verificador que rescataba noticias de una en una.
+#
+# POR QUÉ SE CAMBIÓ (29-sep-2026). Durante semanas el sistema decidía
+# qué entraba con listas de palabras clave y solo llamaba al modelo al
+# final, para rescatar dudosas cuando faltaba cupo. Estaba al revés:
+#   - Las reglas de texto se usaban para lo que peor se les da —juzgar
+#     si una noticia TRATA del tema— y acumulaban excepciones sin fin
+#     (loterías, fiestas patrias, desalojos, aniversarios...). Esa lista
+#     nunca iba a estar completa.
+#   - El modelo, que es justo lo que sabe distinguir que "Centro de
+#     Seguridad Social" puede ser el nombre de un salón de fiestas,
+#     quedaba de último recurso y con presión por llenar un hueco. En
+#     esa situación dijo que sí tres veces a cosas que no debía.
+#
+# Ahora los filtros de texto deciden el PAÍS —objetivo, barato y
+# fiable— y el modelo puntúa el TEMA y el valor noticioso de TODAS las
+# candidatas, no solo de las dudosas.
+#
+# EL LOTE ES LO QUE LO HACE VIABLE: puntuar una por una serían ~120
+# llamadas por reporte y siete minutos. Metiendo todas las candidatas
+# de un país en un solo mensaje son 10 llamadas: menos de dos minutos,
+# por debajo del verificador anterior en sus peores casos. Y el modelo
+# las ve JUNTAS Y EN COMPETENCIA ("de estas ocho, ¿cuáles son las
+# mejores?") en vez de una a una con un hueco que llenar, que era la
+# situación que lo volvía complaciente.
+
+# Nota mínima para que una noticia se publique.
+NOTA_MINIMA_PARA_PUBLICAR = 2
+
+# Tope de candidatas que se mandan a puntuar por país, para acotar el
+# tamaño del mensaje.
+MAX_CANDIDATAS_A_PUNTUAR = 14
+
+_PATRON_PUNTUACION = re.compile(r"^\s*(\d+)\s*\|\s*([0-3])\s*\|\s*(.*)$")
+
+
+def puntuar_candidatas(
+    candidatas: List[Dict], pais: str, groq_api_key: str
+) -> Dict[int, Dict]:
     """
-    Agente verificador (Capa 3 de la estrategia híbrida) — usa Groq
-    para confirmar si una noticia candidata es genuinamente relevante
-    al tema en el país buscado, atrapando casos ambiguos que ningún
-    filtro de texto (palabras clave, TLD, demónimos) puede anticipar
-    de forma exhaustiva.
+    Puntúa en UNA sola llamada todas las candidatas de un país.
 
-    Diseñado para usarse SOLO cuando, tras la búsqueda con site: y los
-    filtros de texto, quedan menos candidatas que las necesarias — no
-    se llama para cada noticia de cada país, para mantener bajo el
-    consumo de cuota de Groq (ver _completar_con_verificacion_llm).
-
-    POLÍTICA ANTE FALLO (fail-closed): si Groq falla incluso tras los
-    reintentos y el cambio de modelo, la noticia NO se rescata. Toda
-    candidata que llega aquí ya fue descartada por un filtro
-    determinista por un motivo concreto (menciona otro país, no calza
-    con el tema...); rescatarla sin verificación real invierte la carga
-    de la prueba. Y es justo cuando Groq está caído o saturado —como
-    pasó tras la deprecación del modelo en agosto— cuando un fail-open
-    dejaría entrar ruido de forma sistemática, en el peor momento
-    posible. Perder una noticia dudosa cuesta menos que publicar una
-    incorrecta.
-
-    Returns
-    -------
-    True solo si Groq confirma la relevancia explícitamente; False si la
-    niega o si el verificador no pudo ejecutarse.
+    Devuelve {indice: {"nota": int, "razon": str}} con los índices de la
+    lista recibida. Si la llamada falla, devuelve {} — el que llama
+    decide qué hacer con eso (ver procesar_pais: se publica lo que
+    aprobaron los filtros, para no quedarse sin reporte).
     """
+    if not candidatas:
+        return {}
+
+    lineas = []
+    for i, n in enumerate(candidatas[:MAX_CANDIDATAS_A_PUNTUAR], start=1):
+        titulo = (n.get("titulo") or "")[:180]
+        fuente = (n.get("fuente") or "")[:60]
+        extracto = (n.get("snippet") or "")[:280]
+        lineas.append(f"{i}. TÍTULO: {titulo}\n   FUENTE: {fuente}\n   EXTRACTO: {extracto}")
+
     prompt = (
-        f"Eres un verificador estricto de relevancia temática para {pais}.\n\n"
-        f"Título: {titulo}\n"
-        f"Extracto: {snippet}\n\n"
-        f"Pregunta: ¿Esta noticia trata genuinamente sobre programas, "
-        f"políticas o instituciones PÚBLICAS de protección social, "
-        f"seguridad social, asistencia social o desarrollo social "
-        f"DE {pais}?\n\n"
-        f"Responde NO si se cumple cualquiera de estos casos:\n"
-        f"- La noticia es de otro país o sobre otro país (aunque el "
-        f"evento ocurra físicamente en {pais}).\n"
-        f"- Es caridad puntual, donaciones o colectas de entidades "
-        f"privadas (empresas, clubes, fundaciones, iglesias), no un "
-        f"programa o política pública de protección social.\n"
-        f"- La ayuda está dirigida principalmente a población de otro "
-        f"país (ej. migrantes o familias de otra nacionalidad).\n"
-        f"- Es sobre loterías, sorteos, deportes, farándula o política "
-        f"general sin relación directa con estos programas.\n"
-        # Los dos casos que el verificador dejó pasar el 29-sep-2026.
-        f"- Es sobre delincuencia, justicia penal, desalojos, "
-        f"operativos policiales o seguridad pública. \"Seguridad "
-        f"pública\" NO es \"seguridad social\".\n"
-        f"- Es la cobertura de un acto festivo, ceremonial o deportivo "
-        f"(fiestas patrias, aniversarios, desfiles, misas, torneos) en "
-        f"el que la institución de protección social solo pone la sede "
-        f"o la organización. Que el acto ocurra en un \"Centro de "
-        f"Seguridad Social\" no convierte la fiesta en noticia de "
-        f"protección social.\n"
-        f"- Solo menciona una institución de protección social de "
-        f"forma tangencial, sin que sea el tema central.\n"
-        # Regla añadida el 29-sep-2026. Una nota peruana sobre "Villa El
-        # Salvador" (distrito de Lima) fue aprobada por el verificador
-        # para el reporte de El Salvador: leyó el nombre del país dentro
-        # del nombre de otro lugar y lo dio por bueno. El filtro de texto
-        # ya enmascara estos topónimos, pero el verificador necesita la
-        # regla explícita, porque su trabajo es justo revisar los casos
-        # que los filtros no resolvieron.
-        f"- El nombre del país aparece solo DENTRO del nombre de otro "
-        f"lugar, que está en otro país. Ejemplos: \"Villa El Salvador\" "
-        f"es un distrito de Lima, Perú; \"Nuevo México\" es un estado de "
-        f"Estados Unidos; \"Panama City\" está en Florida. Un topónimo "
-        f"así NO hace que la noticia sea de {pais}. Fíjate en pistas "
-        f"como la moneda, las instituciones citadas y las ciudades "
-        f"mencionadas para saber de qué país es realmente.\n\n"
-        f"Responde ÚNICAMENTE con una palabra: SI o NO."
+        f"Eres el editor de un boletín de monitoreo sobre programas de "
+        f"protección social en {pais}, dirigido a analistas de política "
+        f"pública.\n\n"
+        f"Puntúa CADA noticia de 0 a 3 según sirva para ese boletín:\n\n"
+        f"3 = Central. Trata de una política, programa o institución "
+        f"PÚBLICA de protección social de {pais}: pensiones, seguridad "
+        f"social, asistencia social, transferencias monetarias, "
+        f"desarrollo social. Es un hecho noticioso real.\n"
+        f"2 = Relevante. Trata del tema y del país, aunque de forma más "
+        f"lateral o indirecta.\n"
+        f"1 = Tangencial. Solo menciona el tema o la institución de "
+        f"pasada; el asunto central es otro.\n"
+        f"0 = No corresponde. Es de otro país; o es un acto festivo, "
+        f"ceremonial o deportivo donde la institución solo pone la sede; "
+        f"o es delincuencia, justicia penal o seguridad pública "
+        f"(\"seguridad pública\" NO es \"seguridad social\"); o es "
+        f"lotería o sorteo; o es caridad privada; o es publicidad; o no "
+        f"es una noticia sino una página de índice o de archivo.\n\n"
+        f"Ojo con dos trampas:\n"
+        f"- Que el nombre del país aparezca dentro del nombre de otro "
+        f"lugar no lo hace de {pais} (\"Villa El Salvador\" es un "
+        f"distrito de Lima).\n"
+        f"- Que un acto ocurra en un edificio llamado \"Centro de "
+        f"Seguridad Social\" no convierte el acto en noticia de "
+        f"protección social.\n\n"
+        f"Sé exigente: es mejor un boletín corto y bueno que uno largo "
+        f"con relleno. No hay ningún cupo que llenar.\n\n"
+        f"Responde SOLO con una línea por noticia, sin nada más, en este "
+        f"formato exacto:\n"
+        f"numero|nota|razon breve (menos de 12 palabras)\n\n"
+        f"NOTICIAS:\n\n" + "\n\n".join(lineas)
     )
 
     texto, _error = _llamar_groq_con_reintentos(
-        groq_api_key, prompt, temperature=0, max_completion_tokens=200
+        groq_api_key, prompt, temperature=0, max_completion_tokens=1200
     )
     if texto is None:
-        return False  # fail-closed: sin verificación real no hay rescate (ver docstring)
+        return {}
 
-    texto = texto.upper()
-    # Coincidencia estricta: solo cuenta como "relevante" si la
-    # primera palabra de la respuesta ES "SI"/"SÍ" (ignorando
-    # puntuación final como "SI." o "SÍ,") — no basta con que la
-    # respuesta comience con la letra "S" (ej. "Sin información
-    # suficiente" empieza con S pero significa lo contrario).
-    primera_palabra = texto.split()[0].strip(".,;:!¡¿?") if texto.split() else ""
-    return primera_palabra in ("SI", "SÍ")
+    notas = {}
+    for linea in texto.splitlines():
+        m = _PATRON_PUNTUACION.match(linea.strip())
+        if not m:
+            continue
+        indice = int(m.group(1)) - 1
+        if 0 <= indice < len(candidatas):
+            notas[indice] = {
+                "nota": int(m.group(2)),
+                "razon": m.group(3).strip()[:120],
+            }
+    return notas
 
 
 def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> Dict:
@@ -451,101 +474,9 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
 
 
 def seleccionar_top_n(noticias: List[Dict], n: int = 3) -> List[Dict]:
-    """
-    Selecciona las n noticias más relevantes de una lista.
-    Criterio simple: las primeras n en el orden devuelto por SerpAPI,
-    que ya viene ordenado por relevancia/recencia de Google News.
-    Se descartan entradas con error o sin título.
-    """
-    validas = [
-        noticia for noticia in noticias
-        if "error" not in noticia and noticia.get("titulo")
-    ]
-    # Red de seguridad final contra duplicados (por link y por similitud
-    # de título) — scraper.py ya deduplica, pero esta capa garantiza que
-    # el reporte final nunca muestre el mismo evento dos veces, venga de
-    # donde venga (caché de versiones anteriores incluido).
-    return deduplicar_noticias(validas)[:n]
-
-
-def _completar_con_verificacion_llm(
-    aceptadas: List[Dict],
-    descartadas_marginales: List[Dict],
-    n_necesarias: int,
-    pais: str,
-    groq_api_key: str,
-) -> List[Dict]:
-    """
-    Agente verificador orquestador (Capa 3 de la estrategia híbrida):
-    si "aceptadas" ya tiene al menos n_necesarias, las devuelve tal
-    cual, SIN tocar Groq (sin costo extra — caso común, cobertura
-    normal). Si faltan, recorre "descartadas_marginales" (las que los
-    filtros de texto de scraper.py ya habían descartado) y las pasa
-    una por una por verificar_relevancia_llm, añadiendo las que se
-    confirmen relevantes hasta completar n_necesarias o agotar las
-    candidatas disponibles.
-
-    Deduplica por link contra las ya aceptadas (y entre las propias
-    descartadas_marginales): la misma noticia puede aparecer tanto en
-    "aceptadas" como en "descartadas_marginales" si las dos capas de
-    búsqueda (site: y anclas de texto) la trajeron por separado con
-    una clasificación distinta — sin este chequeo, el verificador
-    podía "rescatar" una noticia que ya estaba en el reporte, dejando
-    el mismo artículo duplicado con dos resúmenes distintos.
-
-    Esto mantiene el costo de Groq bajo en el caso común y solo lo
-    activa cuando realmente hace falta completar el cupo de noticias.
-
-    Las candidatas se revisan EN ORDEN DE RESCATABILIDAD, no en el
-    orden en que llegaron (ver scraper.ordenar_marginales). Motivo
-    confirmado el 29-sep-2026: el reporte de Honduras incluyó
-    "Instituciones que persiguen el crimen priorizan desalojos frente
-    a otros delitos" —una nota de seguridad y justicia, sin ninguna
-    palabra del tema— porque quedó marginal por "tema_ausente", el
-    verificador la revisó para llenar el quinto hueco y respondió que
-    sí. Ahora las dudosas por país se ofrecen primero y las que no
-    tienen ni una palabra del tema quedan al final de la cola.
-    """
-    if len(aceptadas) >= n_necesarias:
-        return aceptadas[:n_necesarias]
-
-    descartadas_marginales = ordenar_marginales(descartadas_marginales)
-
-    resultado = list(aceptadas)
-    links_ya_incluidos = {n["link"] for n in resultado if n.get("link")}
-
-    candidatas_sin_revisar = 0
-    for candidata in descartadas_marginales:
-        if len(resultado) >= n_necesarias:
-            break
-
-        link = candidata.get("link")
-        if link and link in links_ya_incluidos:
-            continue  # ya está en el reporte (vino de la otra capa) — no revisar de nuevo
-
-        # Mismo evento con otro link (artículo distinto): tampoco se
-        # revisa ni se incluye — evita duplicados y ahorra la llamada
-        # a Groq que costaría verificarla.
-        if any(titulos_similares(candidata.get("titulo", ""), ya.get("titulo", ""))
-               for ya in resultado):
-            continue
-
-        if candidatas_sin_revisar > 0:
-            time.sleep(ESPERA_ENTRE_LLAMADAS_SEGUNDOS)
-        candidatas_sin_revisar += 1
-
-        es_relevante = verificar_relevancia_llm(
-            titulo=candidata["titulo"],
-            snippet=candidata.get("snippet", ""),
-            pais=pais,
-            groq_api_key=groq_api_key,
-        )
-        if es_relevante:
-            resultado.append(candidata)
-            if link:
-                links_ya_incluidos.add(link)
-
-    return resultado
+    """Deduplica y recorta a n. Se conserva porque el caché antiguo y
+    algún script auxiliar la usan."""
+    return deduplicar_noticias(noticias)[:n]
 
 
 def procesar_pais(
@@ -556,52 +487,109 @@ def procesar_pais(
     progress_callback=None,
 ) -> Dict:
     """
-    Para un país: completa el cupo de noticias (usando el agente
-    verificador de Groq si hace falta) y genera resumen de cada una.
+    Para un país: puntúa las candidatas, se queda con las que superan
+    el umbral y genera un resumen de cada una.
+
+    EL CUPO ES UN TECHO, NO UNA META (cambio del 29-sep-2026). Antes
+    n_noticias era un objetivo que el sistema se esforzaba en alcanzar,
+    y ese esfuerzo era la causa de fondo de casi todo lo que se coló en
+    los reportes: los desalojos en Honduras, el artículo sobre IA en
+    Costa Rica y los cinco comunicados del IGSS en Guatemala entraron
+    todos para llenar un hueco. Ahora, si un país solo tiene dos
+    noticias que valgan, se publican dos.
+
+    Eso no es una carencia del reporte: es información. Que un país
+    tenga dos y otro cinco dice algo real sobre la cobertura mediática
+    de la protección social en cada uno.
 
     Parameters
     ----------
     resultado_busqueda : el dict devuelto por scraper.buscar_noticias_pais,
                 con keys "aceptadas", "descartadas_marginales", "error".
     progress_callback : función opcional progress_callback(etapa, hecho,
-                total) que se llama antes de cada paso lento, para que la
-                interfaz pueda mostrar avance real.
-
-                Sin esto, un país tarda ~30 segundos en los que la barra
-                de progreso no se mueve ni una vez, y la app parece
-                colgada. El cuello de botella no es la búsqueda sino los
-                resúmenes: son 5 llamadas a Groq espaciadas 3,5 segundos
-                por el límite de tokens por minuto. Avisando de cada una,
-                la barra avanza cada ~4 segundos en vez de cada 30.
+                total) que se llama antes de cada paso lento, para que
+                la interfaz pueda mostrar avance real.
 
     Returns
     -------
-    {"pais": str, "noticias": [{"titulo", "fuente", "fecha", "link", "resumen"}],
-     "sin_resultados": bool, "errores_llm": [str, ...]}
+    {"pais": str, "noticias": [...], "sin_resultados": bool,
+     "errores_llm": [...], "descartadas": [...]}
+    Cada noticia lleva además "nota" y "razon" del editor, para que la
+    decisión sea auditable. "descartadas" son las que no llegaron al
+    umbral, con su nota y su razón.
     """
-    aceptadas = seleccionar_top_n(resultado_busqueda.get("aceptadas", []), n_noticias)
-    descartadas = resultado_busqueda.get("descartadas_marginales", [])
+    # Todas las candidatas van al editor: las que pasaron los filtros y
+    # las que quedaron dudosas. Los filtros de texto ya decidieron el
+    # país (objetivo); el tema lo decide ahora el editor.
+    aceptadas = deduplicar_noticias(resultado_busqueda.get("aceptadas", []))
+    marginales = ordenar_marginales(resultado_busqueda.get("descartadas_marginales", []))
 
-    necesito_verificador = len(aceptadas) < n_noticias
-    if necesito_verificador and progress_callback:
-        progress_callback("verificando", 0, n_noticias)
-    top = _completar_con_verificacion_llm(aceptadas, descartadas, n_noticias, pais, groq_api_key)
+    vistos = {n.get("link") for n in aceptadas if n.get("link")}
+    candidatas = list(aceptadas)
+    for n in marginales:
+        link = n.get("link")
+        if link and link in vistos:
+            continue
+        if any(titulos_similares(n.get("titulo", ""), o.get("titulo", "")) for o in candidatas):
+            continue
+        vistos.add(link)
+        candidatas.append(n)
 
-    if not top:
-        return {"pais": pais, "noticias": [], "sin_resultados": True, "errores_llm": []}
+    if not candidatas:
+        return {"pais": pais, "noticias": [], "sin_resultados": True,
+                "errores_llm": [], "descartadas": []}
+
+    if progress_callback:
+        progress_callback("puntuando", 0, len(candidatas))
+    # La llamada del editor es la más grande del reporte (~2.000 fichas
+    # frente a las ~440 de un resumen), así que se espacia igual que las
+    # demás para no rebasar el límite de fichas por minuto de Groq.
+    time.sleep(ESPERA_ENTRE_LLAMADAS_SEGUNDOS)
+    notas = puntuar_candidatas(candidatas, pais, groq_api_key)
+
+    errores_llm = []
+    if not notas:
+        # El editor no respondió (servicio caído, bloqueo de red...).
+        # Se publica lo que aprobaron los filtros en vez de entregar un
+        # reporte vacío, y se deja constancia de que nadie lo revisó.
+        errores_llm.append(
+            "El editor de relevancia no respondió: se publican las noticias "
+            "que aprobaron los filtros automáticos, sin revisión del modelo."
+        )
+        seleccion = [dict(n, nota=None, razon="sin revisar") for n in aceptadas[:n_noticias]]
+        descartadas = []
+    else:
+        puntuadas = []
+        for i, n in enumerate(candidatas):
+            info = notas.get(i)
+            if info is None:
+                # Candidata que el editor no puntuó: se trata como
+                # dudosa, no se cuela por omisión.
+                continue
+            puntuadas.append(dict(n, nota=info["nota"], razon=info["razon"]))
+
+        # Orden estable: primero la nota, y a igual nota se respeta el
+        # orden en que llegaron (las de medios curados van antes).
+        puntuadas.sort(key=lambda n: -n["nota"])
+        seleccion = [n for n in puntuadas if n["nota"] >= NOTA_MINIMA_PARA_PUBLICAR][:n_noticias]
+        descartadas = [
+            {"titulo": n["titulo"], "fuente": n.get("fuente", ""),
+             "link": n.get("link", ""), "nota": n["nota"], "razon": n["razon"]}
+            for n in puntuadas if n not in seleccion
+        ]
+
+    if not seleccion:
+        return {"pais": pais, "noticias": [], "sin_resultados": True,
+                "errores_llm": errores_llm, "descartadas": descartadas}
 
     procesadas = []
-    errores_llm = []
-    for i, noticia in enumerate(top):
+    for i, noticia in enumerate(seleccion):
         if progress_callback:
-            progress_callback("resumiendo", i, len(top))
-        if i > 0 or necesito_verificador:
-            # Pequeña pausa entre llamadas consecutivas para repartir el
-            # volumen dentro del límite de 30 solicitudes/minuto de Groq.
-            # Se aplica también antes de la primera llamada de este bucle
-            # si el verificador ya hizo llamadas justo antes (evita una
-            # ráfaga en la transición verificador -> resúmenes).
-            time.sleep(ESPERA_ENTRE_LLAMADAS_SEGUNDOS)
+            progress_callback("resumiendo", i, len(seleccion))
+        # Pausa entre llamadas para no rebasar el límite de tokens por
+        # minuto de Groq. Se aplica también antes de la primera, porque
+        # la puntuación acaba de hacer una llamada justo antes.
+        time.sleep(ESPERA_ENTRE_LLAMADAS_SEGUNDOS)
 
         resultado = resumir_noticia(
             titulo=noticia["titulo"],
@@ -618,9 +606,12 @@ def procesar_pais(
             "fecha": noticia.get("fecha", ""),
             "link": noticia.get("link", ""),
             "resumen": resultado["resumen"],
+            "nota": noticia.get("nota"),
+            "razon": noticia.get("razon", ""),
         })
 
-    return {"pais": pais, "noticias": procesadas, "sin_resultados": False, "errores_llm": errores_llm}
+    return {"pais": pais, "noticias": procesadas, "sin_resultados": False,
+            "errores_llm": errores_llm, "descartadas": descartadas}
 
 
 def procesar_todos_los_paises(
@@ -704,10 +695,22 @@ def _agregar_pais(doc: Document, datos_pais: Dict):
 
     if datos_pais["sin_resultados"]:
         p = doc.add_paragraph()
+        # Tres situaciones distintas, que antes se confundían en un
+        # solo mensaje. Desde que el cupo es un techo y no una meta, una
+        # sección vacía puede significar que no hubo cobertura O que la
+        # hubo pero ninguna noticia superó el umbral de relevancia, y no
+        # es lo mismo para quien lee el reporte.
+        n_descartadas = len(datos_pais.get("descartadas", []))
         if datos_pais.get("error_busqueda"):
             texto_vacio = (
                 f"No se pudo consultar este país por un error técnico: "
                 f"{datos_pais['error_busqueda']}"
+            )
+        elif n_descartadas:
+            texto_vacio = (
+                f"Se revisaron {n_descartadas} noticia(s) de este país, pero "
+                f"ninguna trataba de programas de protección social con "
+                f"suficiente centralidad como para incluirla."
             )
         else:
             texto_vacio = (
