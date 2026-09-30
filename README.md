@@ -1,4 +1,4 @@
-# Resumen Diario: Programas de Protección Social (México + CA + Caribe)
+# Resumen Diario: Programas de Protección Social (CA + Caribe)
 
 App con dos agentes que recolectan y resumen noticias diarias sobre
 programas de protección social en Costa Rica, Cuba, El Salvador,
@@ -503,7 +503,13 @@ que el medio sigue publicando. Lo que apareció:
 - **Haití**, el país con peor cobertura histórica, tenía cinco medios y
   uno (`loophaiti.com`) sin publicaciones verificables desde 2020. Se
   retiró y se añadieron cinco medios francófonos, entre ellos
-  `lenational.org`, que cubrió el foro del ONA sobre pensiones.
+  `lenational.org`, que cubrió el foro del ONA sobre pensiones. El
+  30-sep se amplió otra vez, a 13 medios: `rhinews.com` (serie sobre la
+  reforma de pensiones del ONA), `hpninfo.com` (movilización obrera por
+  el salario mínimo), `icihaiti.com` (publica el boletín semanal del
+  ONA) y `haitiantimes.com` (diáspora, en inglés). Para compensar la
+  longitud de la consulta se retiraron dos términos franceses de bajo
+  rendimiento.
 - Varios medios que ya venían aportando noticias **por la capa 2**
   —`criterio.hn`, `proceso.hn`, `elmundo.cr`, `juno7.ht`,
   `divergentes.com`, `grupoanimal.mx`— no estaban en la capa 1. Ahora
@@ -527,6 +533,27 @@ que el medio sigue publicando. Lo que apareció:
 3. Verificar el dominio con una búsqueda antes de añadirlo. Dos de las
    sorpresas de esta revisión fueron dominios que parecían obvios y
    estaban mal.
+
+### Por qué NO se añaden dominios globales a la lista de un país
+
+Regla dura, con una razón técnica detrás. `SITIOS_PAIS` no solo dice
+dónde buscar: también define a qué país **pertenece** cada dominio, y
+`_dominio_curado_de_otro_pais` descarta en duro una noticia cuyo medio
+esté curado para otro país. Así que registrar `ilo.org` bajo Haití
+haría que un informe de la OIT sobre Honduras se rechazara de la
+sección de Honduras. Lo mismo con `news.un.org`, `cepal.org` o
+cualquier organismo internacional.
+
+Por eso, de la lista de doce medios propuesta para Haití el 30-sep-2026
+se descartaron siete:
+
+| Dominio | Motivo |
+|---|---|
+| `ilo.org`, `news.un.org` | Organismos internacionales: son globales, no de un país (además del efecto de arriba) |
+| `rsf.org` | ONG de libertad de prensa; su tema no es protección social. Es el caso `ei-ie.org` repetido |
+| `prensaescrita.com`, `digiprensa.com` | Directorios de periódicos: devuelven páginas índice, no artículos |
+| `redacciondesalud.com` | Salud **dominicana**. Usa el mismo vocabulario ("seguridad social", "pensiones") con el país equivocado: falsos positivos garantizados |
+| `haitidocs.org` | Repositorio de informes en PDF, no prensa fechada |
 
 ### Sitios institucionales (reserva, no están en uso)
 

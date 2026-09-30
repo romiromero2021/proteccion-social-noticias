@@ -177,6 +177,19 @@ SITIOS_PAIS = {
         "metropole.ht",      # Radio Télé Métropole (NO metropolehaiti.com)
         "gazettehaiti.com",
         "vantbefinfo.com",
+        # Ampliación del 30-sep-2026, con cobertura del tema verificada
+        # artículo por artículo (no preventiva):
+        "rhinews.com",       # Réseau Haïtien de l'Information: serie sobre
+                             # la reforma de pensiones del ONA
+        "hpninfo.com",       # Haiti Press Network: movilización obrera por
+                             # el salario mínimo, sindicato policial
+        "icihaiti.com",      # publica el boletín semanal del ONA y notas de
+                             # OFATMA. Mismo editor que haitilibre.com, así
+                             # que habrá duplicados; los resuelve el editor
+        "haitiantimes.com",  # prensa de la diáspora (Nueva York), en inglés:
+                             # huelga textil, salario mínimo. OJO: publica
+                             # también mucho sobre política migratoria de
+                             # EE.UU., que NO es protección social haitiana
         # loophaiti.com RETIRADO: sin publicaciones verificables desde 2020.
     ],
     "Honduras": [
@@ -380,12 +393,17 @@ TERMINOS_TEMATICOS = [
 # Radio Métropole, etc.), dejando solo cobertura *sobre* Haití escrita
 # por medios internacionales en español. Verificados contra fuentes
 # oficiales del MAST (Ministère des Affaires Sociales et du Travail).
+# Nota (30-sep-2026): se retiraron "politique sociale" y "transferts
+# monétaires" al ampliar la lista de medios haitianos de 9 a 13. Cada
+# término y cada dominio alargan la consulta, y la de Haití ya era la
+# más larga de las diez. Se eligieron esos dos por ser los de menor
+# rendimiento: "politique sociale" se solapa con "protection sociale",
+# y los programas de transferencias monetarias apenas aparecen con ese
+# nombre en la prensa haitiana, donde se habla de "filets sociaux".
 TERMINOS_TEMATICOS_FRANCES = [
     "protection sociale",
     "sécurité sociale",
-    "politique sociale",
     "assistance sociale",
-    "transferts monétaires",
     "ministère des affaires sociales",
     "système de retraite",   # la reforma de pensiones domina la agenda haitiana
     "assurance-vieillesse",
