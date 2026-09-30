@@ -24,6 +24,7 @@ import streamlit as st
 import unicodedata
 from datetime import datetime
 from cache import _ahora
+from datos_paises import ficha
 
 from scraper import buscar_noticias_pais, PAISES, TERMINOS_TEMATICOS
 from summarizer import (procesar_pais, generar_documento_word, modelo_en_uso,
@@ -262,6 +263,11 @@ if ejecutar_todos:
 
     barra = st.progress(0.0, text="Iniciando…")
     linea_estado = st.empty()
+    # Ficha del país que se está procesando en ese momento. La espera
+    # ronda los veinte minutos, así que en vez de una barra muda se
+    # muestra algo que se pueda leer — y que además sitúa al lector en
+    # el país cuyas noticias están llegando.
+    area_ficha = st.empty()
     linea_dato = st.empty()
     # Área de resultados en vivo: las noticias de cada país se muestran
     # en cuanto están listas, sin esperar a que terminen los 11. Es el
@@ -283,6 +289,28 @@ if ejecutar_todos:
     pasos_totales = total * PASOS_POR_PAIS
     estado = {"pasos": 0, "dato": 0}
 
+    def _pintar_ficha(pais_actual: str):
+        """Dibuja la ficha del país en curso. Solo cambia cuando cambia
+        el país, así que redibujarla en cada paso no parpadea."""
+        datos = ficha(pais_actual)
+        if not datos:
+            area_ficha.empty()
+            return
+        with area_ficha.container(border=True):
+            st.markdown(f"### {pais_actual}")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown(f"**Capital**  \n{datos['capital']}")
+                st.markdown(f"**Idioma**  \n{datos['idioma']}")
+            with col_b:
+                st.markdown(f"**Colinda con**  \n{datos['fronteras']}")
+                st.markdown(f"**Moneda**  \n{datos['moneda']}")
+            st.markdown("**Sitios históricos y arqueológicos**")
+            for sitio in datos["sitios"]:
+                st.markdown(f"- {sitio}")
+            st.markdown(f"**Protección social**  \n{datos['institucion']}")
+            st.info(datos["curiosidad"])
+
     def _pintar(pais_actual: str, indice_pais: int, etapa: str, hecho: int, de: int):
         fraccion = min(0.999, estado["pasos"] / pasos_totales)
         transcurrido = _time.monotonic() - inicio
@@ -302,11 +330,13 @@ if ejecutar_todos:
             f"faltan ~{restante}"
         )
 
+        _pintar_ficha(pais_actual)
+
         # El dato cambia cada dos pasos: lo bastante seguido para que se
         # note que la app está viva, sin que dé tiempo a leerlo a medias.
         if estado["pasos"] % 2 == 0:
             estado["dato"] = (estado["dato"] + 1) % len(DATOS_MIENTRAS_ESPERAS)
-        linea_dato.info(f"💡 {DATOS_MIENTRAS_ESPERAS[estado['dato']]}")
+        linea_dato.caption(f"💡 {DATOS_MIENTRAS_ESPERAS[estado['dato']]}")
 
     for i, pais in enumerate(PAISES):
         def _cb(etapa, hecho, de, _p=pais, _i=i + 1):
@@ -354,6 +384,7 @@ if ejecutar_todos:
 
     barra.progress(1.0, text=f"✅ Listo en {_mmss(_time.monotonic() - inicio)}")
     linea_estado.empty()
+    area_ficha.empty()
     linea_dato.empty()
     # Se limpia la vista en vivo: justo debajo se renderizan las
     # pestañas definitivas, y dejar ambas duplicaría todo el reporte.

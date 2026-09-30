@@ -1,4 +1,4 @@
-# Resumen Diario: Programas de Protección Social (México + CA + Caribe)
+# Resumen Diario: Programas de Protección Social (CA + Caribe)
 
 App con dos agentes que recolectan y resumen noticias diarias sobre
 programas de protección social en Costa Rica, Cuba, El Salvador,
@@ -15,6 +15,7 @@ país** para refrescar solo uno sin gastar cuota en los otros 9.
 app.py          -> Interfaz Streamlit, orquesta los dos agentes + caché
 scraper.py       -> AGENTE 1: recolecta noticias vía SerpAPI (google_news)
 summarizer.py    -> AGENTE 2: resume con Groq (GPT OSS 120B) + genera el .docx
+datos_paises.py  -> Fichas de país que se muestran durante la espera
 cache.py         -> Caché diario por país en SQLite (cache_noticias.db)
 requirements.txt -> Dependencias
 ```
@@ -453,6 +454,31 @@ Prensa y el listado de la sección Económicas de El 19 Digital.
 `/vertodos/`, `/seccion/`, `?page=`…) o porque el título tiene una o
 dos palabras — ningún titular real se resume en dos palabras, pero los
 nombres de sección sí. Es un descarte duro.
+
+## La espera: qué se muestra mientras trabaja
+
+Un reporte completo tarda unos veinte minutos. Durante ese rato la
+pantalla no se queda muda:
+
+- Las noticias de cada país **aparecen en cuanto están listas**, así
+  que a los dos minutos ya hay algo que leer.
+- La barra avanza cada pocos segundos y dice en qué va y cuánto falta.
+- Se muestra la **ficha del país que se está procesando** en ese
+  momento (`datos_paises.py`): capital, fronteras, idioma, moneda,
+  sitios históricos y arqueológicos, la institución rectora de
+  protección social y un dato curioso.
+
+**Regla de oro de `datos_paises.py`: solo datos que no caducan.** Nada
+de presidentes, población, PIB ni rankings que dependan de cifras. Un
+dato obsoleto en pantalla es peor que ningún dato, porque nadie va a
+acordarse de actualizar ese archivo. Hay una prueba automática
+(`test_fichas.py`) que falla si aparece una palabra como "presidente",
+"población" o "actualmente" en cualquier ficha — de hecho atrapó una:
+"el país más poblado de Centroamérica" estaba en la de Guatemala.
+
+La institución rectora se incluye a propósito aunque no sea trivia:
+mientras la app trabaja, quien mira aprende de qué habla el reporte
+que está esperando.
 
 ## Mantenimiento: las listas de medios
 
