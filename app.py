@@ -50,7 +50,7 @@ def _normalizar_nombre_archivo(texto: str) -> str:
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Noticias: Protección Social en Centroamérica y el Caribe",
+    page_title="Noticias: Protección Social en México, Centroamérica y el Caribe",
     page_icon="📰",
     layout="wide",
 )
