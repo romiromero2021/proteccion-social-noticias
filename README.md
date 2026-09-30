@@ -342,6 +342,61 @@ dataset como subproducto.
 reglas temáticas de texto siguen ahí como señal para ordenar las
 candidatas, pero ya no deciden.
 
+## Reparación del titular (30-sep-2026)
+
+Dos defectos de presentación que venían de la fuente, no de la app,
+pero que quedaban igual de mal en el documento. Se corrigen en
+`_convertir`, la puerta de entrada, para que todo lo de aguas abajo
+—editor, resumen, Word— trabaje ya con el título limpio.
+
+**Titulares cortados.** Las cuatro noticias de El Salvador salieron
+como "Piden a la OIT observar proceso de modificación ...": Google
+trunca los titulares largos en su pestaña de Noticias. La pieza que
+faltaba estaba a la vista: **el titular completo está en la URL**,
+porque los gestores de contenido generan el enlace a partir de él.
+`completar_titulo_truncado` conserva el trozo original —bien escrito,
+con tildes y mayúsculas— y añade solo lo que falta, tomado del slug.
+
+Dos salvaguardas para no inventar titulares: se exige que el prefijo
+solape con el slug en al menos un 60 % de sus palabras (si no, el
+enlace no corresponde al titular y no se toca nada), y si algo no
+cuadra se devuelve el título tal cual. **Es preferible un titular
+cortado a uno inventado.**
+
+El trozo que viene del slug llega sin tildes ni eñes, así que se
+restauran **copiándolas del extracto** cuando esas mismas palabras
+aparecen allí bien escritas: no se inventa nada, se copia de lo que el
+propio medio publicó. Cuando el extracto no las trae, el titular queda
+completo pero con alguna palabra sin tilde — un defecto mucho menor
+que los puntos suspensivos.
+
+Ojo con los identificadores del final del slug: se descartan
+("...-893510", "...-20260928-0086"), pero **un año de cuatro cifras se
+conserva**, porque suele formar parte del titular
+("...-a-agosto-de-2026").
+
+**Caracteres corruptos.** "Sigue Coahuila sumando establecimientos a la
+cruzada por la inclusiÃ³n": esa "Ã³" son los dos bytes de la "ó"
+leídos de uno en uno. `reparar_mojibake` lo deshace, y solo actúa si la
+conversión de vuelta deja menos secuencias raras de las que había — un
+texto correcto sale intacto.
+
+## Repeticiones del mismo hecho
+
+En Haití las cinco noticias eran la misma historia —la reforma de
+pensiones del ONA— contada por cinco medios, dos de ellas del mismo
+diario con una semana de diferencia. No eran duplicados: eran
+artículos distintos sobre el mismo hecho, así que el deduplicado por
+parecido de titulares no podía atraparlos (comparten dos palabras de
+seis).
+
+Lo resuelve el editor, y es un buen ejemplo de por qué puntuar **por
+lotes** era la decisión correcta: como ve todas las candidatas del país
+a la vez, puede reconocer que cubren el mismo hecho. Su instrucción es
+quedarse con la más completa y marcar el resto con nota 1 y la razón
+"repite la noticia N". Un verificador que las mirara de una en una
+nunca podría hacerlo.
+
 ## Páginas de listado que no son noticias
 
 En Nicaragua entraron dos entradas tituladas "Vienicsa" y

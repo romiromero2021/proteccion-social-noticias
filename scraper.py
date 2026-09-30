@@ -1079,12 +1079,17 @@ def _buscar_una_vez(
     ]
 
     def _convertir(item: Dict, motivo: Optional[str] = None) -> Dict:
+        snippet = reparar_mojibake(item.get("snippet", ""))
         convertida = {
             "pais": pais,
-            "titulo": item.get("title", "Sin título"),
+            # El título se repara aquí, en la puerta de entrada, para
+            # que todo lo de aguas abajo (editor, resumen, documento)
+            # trabaje ya con el titular completo y bien codificado.
+            "titulo": limpiar_titulo(item.get("title", "Sin título"),
+                                     item.get("link", ""), snippet),
             "fuente": _extraer_fuente(item),
             "fecha": item.get("date", "Fecha no disponible"),
-            "snippet": item.get("snippet", ""),
+            "snippet": snippet,
             "link": item.get("link", ""),
         }
         # El motivo por el que una noticia quedó marginal determina
@@ -1329,6 +1334,148 @@ def buscar_noticias_pais(
         dias_maximos_antiguedad=dias_maximos_antiguedad,
         n_noticias_necesarias=n_noticias_necesarias,
     )
+
+
+# ---------------------------------------------------------------------------
+# REPARACIÓN DEL TÍTULO
+# ---------------------------------------------------------------------------
+
+def reparar_mojibake(texto: str) -> str:
+    """
+    Repara el texto que llegó en UTF-8 pero fue leído como Latin-1.
+
+    CASO CONFIRMADO (29-sep-2026, México): el reporte publicó "Sigue
+    Coahuila sumando establecimientos a la cruzada por la inclusiÃ³n".
+    Esa "Ã³" son los dos bytes de la "ó" interpretados de uno en uno.
+    Viene así desde la fuente, no lo produce esta app, pero queda
+    igualmente mal en un documento institucional.
+
+    Solo se toca el texto si la conversión de vuelta funciona Y deja un
+    resultado con menos secuencias raras: si el texto estaba bien, esta
+    función lo devuelve intacto.
+    """
+    if not texto or "Ã" not in texto and "Â" not in texto:
+        return texto
+    try:
+        reparado = texto.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return texto
+    if reparado.count("Ã") + reparado.count("Â") < texto.count("Ã") + texto.count("Â"):
+        return reparado
+    return texto
+
+
+_PALABRAS_TITULO_DESDE_URL = re.compile(r"[a-z0-9áéíóúñü]+", re.IGNORECASE)
+
+
+def _palabras_del_slug(link: str) -> List[str]:
+    """Palabras del último tramo de la URL, que suele ser el titular."""
+    ruta = re.sub(r"^https?://[^/]+", "", (link or "").lower()).split("?")[0]
+    tramos = [t for t in ruta.split("/") if t]
+    if not tramos:
+        return []
+    # Muchos medios cuelgan el identificador de la nota en un tramo
+    # aparte, después del slug (".../a-agosto-de-2026/858497"). Si el
+    # último tramo es solo un número, el titular está en el anterior.
+    slug = tramos[-1]
+    if re.fullmatch(r"\d+", slug) and len(tramos) > 1:
+        slug = tramos[-2]
+    # Quitar extensión y los identificadores numéricos del final, que
+    # los CMS añaden al slug ("...-20260928-0086.html", "...-893510").
+    slug = re.sub(r"\.(html?|php|aspx?)$", "", slug)
+    palabras = [p for p in slug.split("-") if p]
+    # Quitar los identificadores que los CMS pegan al final del slug
+    # ("...-893510", "...-20260928-0086"), pero NO un año, que suele
+    # formar parte del titular ("...-a-agosto-de-2026"). Se reconoce un
+    # año por estar en un rango razonable y tener cuatro cifras.
+    def _es_anio(token: str) -> bool:
+        return len(token) == 4 and token.isdigit() and 1900 <= int(token) <= 2100
+
+    while palabras and palabras[-1].isdigit() and not _es_anio(palabras[-1]):
+        palabras.pop()
+    return palabras
+
+
+def _restaurar_acentos(palabra: str, snippet: str) -> str:
+    """
+    Si en el extracto aparece la misma palabra pero acentuada, usa esa.
+
+    El slug de una URL viene sin tildes, así que el trozo de titular
+    que se recupera de ahí saldría como "dias" o "modificacion". El
+    extracto de la misma noticia suele traer esas palabras bien
+    escritas, y es una fuente fiable: no se inventa nada, se copia de
+    lo que el propio medio publicó.
+    """
+    for candidata in _PALABRAS_TITULO_DESDE_URL.findall(snippet or ""):
+        if candidata.lower() != palabra and _quitar_tildes(candidata.lower()) == palabra:
+            return candidata.lower()
+    return palabra
+
+
+def completar_titulo_truncado(titulo: str, link: str, snippet: str = "") -> str:
+    """
+    Reconstruye un titular que Google cortó con puntos suspensivos.
+
+    CASO CONFIRMADO (29-sep-2026, El Salvador): las cuatro noticias del
+    país salieron con títulos como "Piden a la OIT observar proceso de
+    modificación ...". Google trunca los titulares largos en su pestaña
+    de Noticias.
+
+    La pieza que faltaba estaba a la vista: **el titular completo está
+    en la URL**, porque los gestores de contenido generan el enlace a
+    partir de él. De
+    ".../piden-a-la-oit-observar-proceso-de-modificacion-de-jornada-laboral"
+    se recupera el final que Google se comió.
+
+    Se conserva el trozo original —que viene bien escrito, con tildes y
+    mayúsculas— y solo se añade lo que falta, tomado del slug y con las
+    tildes restauradas desde el extracto cuando aparecen allí. Si no se
+    puede reconstruir con confianza, se devuelve el título tal cual: es
+    preferible un titular cortado a uno inventado.
+    """
+    if not titulo:
+        return titulo
+    limpio = titulo.rstrip()
+    if not limpio.endswith(("...", "…", ".. .")):
+        return titulo
+    prefijo = limpio.rstrip(". …").rstrip()
+    if not prefijo:
+        return titulo
+
+    palabras_slug = _palabras_del_slug(link)
+    if len(palabras_slug) < 3:
+        return titulo
+
+    # Alinear: buscar dónde termina el prefijo dentro del slug.
+    palabras_prefijo = [
+        _quitar_tildes(p.lower())
+        for p in _PALABRAS_TITULO_DESDE_URL.findall(prefijo)
+    ]
+    if not palabras_prefijo:
+        return titulo
+
+    # La última palabra del prefijo debe aparecer en el slug, y el
+    # solapamiento tiene que ser alto: si no, el slug no corresponde al
+    # titular (páginas con enlaces genéricos) y no se toca nada.
+    comunes = sum(1 for p in palabras_prefijo if p in palabras_slug)
+    if comunes < max(2, int(len(palabras_prefijo) * 0.6)):
+        return titulo
+
+    ultima = palabras_prefijo[-1]
+    if ultima not in palabras_slug:
+        return titulo
+    corte = len(palabras_slug) - 1 - palabras_slug[::-1].index(ultima)
+    cola = palabras_slug[corte + 1:]
+    if not cola:
+        return titulo
+
+    cola_legible = " ".join(_restaurar_acentos(p, snippet) for p in cola)
+    return f"{prefijo} {cola_legible}"
+
+
+def limpiar_titulo(titulo: str, link: str, snippet: str = "") -> str:
+    """Repara la codificación y completa el titular si venía cortado."""
+    return completar_titulo_truncado(reparar_mojibake(titulo), link, snippet)
 
 
 def _extraer_fuente(item: Dict) -> str:
