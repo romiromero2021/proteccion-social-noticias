@@ -323,6 +323,23 @@ anterior en sus casos malos.
 el reporte: se publica lo que aprobaron los filtros, marcado como
 *sin revisar*, y se avisa.
 
+### El alcance temático: dónde está la frontera
+
+Decisión de la Unidad, 30-sep-2026, tras ver que el editor descartaba
+el debate salvadoreño sobre la jornada de cuatro días:
+
+> **La política laboral entra solo cuando toca la seguridad social.**
+> Cotizaciones, afiliación, pensiones, cobertura, prestaciones: sí. Una
+> reforma de la jornada o del salario mínimo por sí sola: no. La misma
+> reforma contada por su efecto sobre las cotizaciones: sí.
+
+Está escrita como regla explícita en el prompt del editor. Es la clase
+de criterio que una lista de palabras clave no puede expresar —depende
+de qué trata la noticia, no de qué palabras contiene— y es justo por
+esto que la decisión pasó al modelo.
+
+Si el criterio cambia, se ajusta ahí: no hay que tocar ninguna lista.
+
 ### Lo que esto te da además
 
 Cada noticia lleva su **nota y su razón**, visibles en la app, y hay un
