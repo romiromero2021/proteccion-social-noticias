@@ -323,22 +323,26 @@ anterior en sus casos malos.
 el reporte: se publica lo que aprobaron los filtros, marcado como
 *sin revisar*, y se avisa.
 
-### El alcance temático: dónde está la frontera
+### El alcance temático
 
-Decisión de la Unidad, 30-sep-2026, tras ver que el editor descartaba
-el debate salvadoreño sobre la jornada de cuatro días:
+Decisión de la Unidad, 30-sep-2026:
 
-> **La política laboral entra solo cuando toca la seguridad social.**
-> Cotizaciones, afiliación, pensiones, cobertura, prestaciones: sí. Una
-> reforma de la jornada o del salario mínimo por sí sola: no. La misma
-> reforma contada por su efecto sobre las cotizaciones: sí.
+> **La política laboral y salarial forma parte del tema**, con el mismo
+> rango que el resto: jornada de trabajo, salario mínimo y ajustes
+> salariales, negociación colectiva, derechos laborales, formalización
+> del empleo y las decisiones de los ministerios de trabajo. No hace
+> falta que la noticia mencione cotizaciones ni pensiones para valer.
 
-Está escrita como regla explícita en el prompt del editor. Es la clase
+(Ese mismo día se probó primero el criterio contrario —lo laboral solo
+si tocaba la seguridad social— y se descartó: dejaba fuera el debate
+salvadoreño sobre la jornada de cuatro días y adelgazaba los reportes
+más de la cuenta.)
+
+Está escrito como regla explícita en el prompt del editor. Es la clase
 de criterio que una lista de palabras clave no puede expresar —depende
 de qué trata la noticia, no de qué palabras contiene— y es justo por
-esto que la decisión pasó al modelo.
-
-Si el criterio cambia, se ajusta ahí: no hay que tocar ninguna lista.
+esto que la decisión pasó al modelo. **Si el criterio cambia, se ajusta
+ahí: no hay que tocar ninguna lista.**
 
 ### Lo que esto te da además
 
