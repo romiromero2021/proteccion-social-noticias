@@ -478,7 +478,9 @@ TEMA_BASE = TERMINOS_TEMATICOS[0]  # se mantiene por compatibilidad con código 
 DIAS_MAXIMOS_ANTIGUEDAD = 10
 
 
-def construir_query_site(pais: str, terminos: Optional[List[str]] = None) -> str:
+def construir_query_site(pais: str, terminos: Optional[List[str]] = None,
+                         max_terminos: Optional[int] = None,
+                         max_sitios: Optional[int] = None) -> str:
     """
     Construye la query de búsqueda usando el operador "site:" para
     restringir los resultados SOLO a los dominios de medios reales de
@@ -504,9 +506,16 @@ def construir_query_site(pais: str, terminos: Optional[List[str]] = None) -> str
         # pertinentes, cuatro de ellas de medios curados.
         terminos = list(TERMINOS_TEMATICOS_FRANCES)
 
+    if max_terminos is not None:
+        terminos = list(terminos)[:max_terminos]
+
     terminos_con_or = " OR ".join(f'"{t}"' for t in terminos)
 
     sitios = SITIOS_PAIS.get(pais, [])
+    if max_sitios is not None:
+        # Se conservan los primeros, que es donde están los diarios
+        # nacionales de mayor circulación de cada lista.
+        sitios = list(sitios)[:max_sitios]
     sitios_con_or = " OR ".join(f"site:{s}" for s in sitios)
 
     return f'({terminos_con_or}) ({sitios_con_or})'
@@ -956,6 +965,23 @@ def _dentro_del_rango(item: Dict, dias_maximos: int) -> bool:
     return fecha >= limite
 
 
+def _es_error_de_tiempo_agotado(error: Optional[str]) -> bool:
+    """
+    True si el error de SerpAPI fue un tiempo de espera agotado.
+
+    Importa distinguirlo porque, a diferencia de un fallo de red
+    cualquiera, este NO se arregla repitiendo la misma consulta: las
+    consultas largas con el operador site: en la pestaña de Noticias
+    son justamente las que se quedan colgadas (incidencia de SerpAPI
+    del 20-sep-2026, y el caso de México del 30-sep). Lo que sí ayuda
+    es volver a preguntar con una consulta más corta.
+    """
+    if not error:
+        return False
+    texto = error.lower()
+    return "timed out" in texto or "timeout" in texto
+
+
 def _buscar_una_vez(
     pais: str,
     api_key: str,
@@ -1261,6 +1287,21 @@ def _buscar_prensa_pais(
     # Capa 1: query con site: (estrategia principal)
     query_site = construir_query_site(pais, terminos)
     resultado = _buscar_con_fallback_fecha(query_site)
+
+    # Si se agotó el tiempo de espera, se reintenta UNA vez con una
+    # consulta más corta, no con la misma. Repetir una consulta que
+    # acaba de quedarse colgada rara vez funciona: lo que se cuelga son
+    # las consultas largas con el operador site: en la pestaña de
+    # Noticias. Confirmado el 30-sep-2026 con México, cuya consulta
+    # mide 327 caracteres. Se recorta por los dos lados —dos términos
+    # temáticos y cuatro medios— porque el grueso de la longitud son
+    # los dominios, no los términos. La versión corta cubre menos
+    # medios, pero cubrir menos es mejor que no cubrir nada, y la capa
+    # 2 sigue actuando después.
+    if _es_error_de_tiempo_agotado(resultado["error"]):
+        resultado = _buscar_con_fallback_fecha(
+            construir_query_site(pais, terminos, max_terminos=2, max_sitios=4)
+        )
 
     # Si la capa 1 falló, NO se abandona el país: se intenta igual la
     # capa 2, cuya consulta es mucho más simple (sin el operador

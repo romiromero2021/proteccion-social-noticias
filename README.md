@@ -1,4 +1,4 @@
-# Resumen Diario: Programas de Protección Social (México, CA + Caribe)
+# Resumen Diario: Programas de Protección Social (CA + Caribe)
 
 App con dos agentes que recolectan y resumen noticias diarias sobre
 programas de protección social en Costa Rica, Cuba, El Salvador,
@@ -216,6 +216,18 @@ pestaña de país en vez de "🆕 Recién generado".
 
   Comprobado contra el reporte real del 29-sep: de sus 44 noticias,
   sobreviven 42 y caen exactamente las dos defectuosas.
+- **Reintento con consulta CORTA ante un tiempo de espera agotado.**
+  Las consultas largas con el operador `site:` en la pestaña de
+  Noticias son las que se quedan colgadas — es la misma familia que la
+  incidencia de SerpAPI del 20-sep-2026, y le tocó a México el
+  30-sep-2026 con una consulta de 327 caracteres. Repetir la misma
+  consulta rara vez sirve, así que ahora, cuando el error es un tiempo
+  de espera agotado (y solo entonces), se reintenta **una vez** con una
+  versión recortada: dos términos temáticos y cuatro medios en lugar de
+  cinco y ocho. Eso deja las consultas en torno a 150 caracteres, la
+  mitad o menos. Cubre menos medios, pero cubrir menos es mejor que no
+  cubrir nada, y la capa 2 sigue actuando después. Si no hay timeout,
+  no se gasta ninguna búsqueda adicional.
 - **Fallback automático a 2 semanas:** dentro de las capas 1 y 2, si la
   búsqueda de 1 semana no trae ninguna noticia aceptada, se reintenta
   con un rango de 2 semanas antes de pasar a la siguiente capa (o
@@ -332,6 +344,20 @@ Decisión de la Unidad, 30-sep-2026:
 > salariales, negociación colectiva, derechos laborales, formalización
 > del empleo y las decisiones de los ministerios de trabajo. No hace
 > falta que la noticia mencione cotizaciones ni pensiones para valer.
+>
+> **La educación y la sanidad NO**, por sí mismas: el presupuesto
+> educativo, la calidad de la enseñanza o las reivindicaciones
+> sindicales sobre la escuela pública quedan fuera. Sí entran los
+> programas de protección social que se entregan *a través* de la
+> escuela o del sistema de salud: comedores escolares, becas,
+> transferencias condicionadas a la asistencia, cobertura sanitaria
+> del seguro social.
+
+El límite de la educación se añadió el mismo 30-sep, después de que el
+editor —ya con el alcance laboral ampliado— dejara entrar en Haití una
+nota sindical sobre la *rentrée* escolar. Ampliar por un lado obligó a
+precisar por el otro, y esa es la dinámica normal de este ajuste: el
+criterio se afina con casos, no de una vez.
 
 (Ese mismo día se probó primero el criterio contrario —lo laboral solo
 si tocaba la seguridad social— y se descartó: dejaba fuera el debate
