@@ -1286,21 +1286,44 @@ def _buscar_prensa_pais(
     """
 
     def _buscar_con_fallback_fecha(query: str) -> Dict:
-        """Aplica el fallback de 1 semana -> 2 semanas para una query dada."""
+        """
+        Aplica el fallback de 1 semana -> 2 semanas para una query dada.
+
+        Se amplía la ventana solo cuando la capa no trajo NINGUNA
+        noticia aceptada. Ampliar también cuando el país se queda corto
+        se probó y se descartó: dispararía una búsqueda extra en casi
+        todos los países y duplicaría el consumo de SerpAPI, que es el
+        recurso más escaso del proyecto.
+        """
         resultado = _buscar_una_vez(pais, api_key, query, rango_tiempo, max_resultados, dias_maximos_antiguedad)
         if resultado["error"] is not None:
             return resultado
-        if len(resultado["aceptadas"]) == 0 and rango_tiempo == "qdr:w":
-            resultado_2sem = _buscar_una_vez(pais, api_key, query, "qdr:w2", max_resultados, dias_maximos_antiguedad=14)
-            if resultado_2sem["error"] is not None:
-                return resultado_2sem
-            # Combinar descartadas marginales de ambos intentos, por si
-            # el verificador LLM necesita más candidatas para revisar.
-            resultado_2sem["descartadas_marginales"] = (
-                resultado["descartadas_marginales"] + resultado_2sem["descartadas_marginales"]
-            )
-            return resultado_2sem
-        return resultado
+        if resultado["aceptadas"] or rango_tiempo != "qdr:w":
+            return resultado
+
+        resultado_2sem = _buscar_una_vez(pais, api_key, query, "qdr:w2", max_resultados, dias_maximos_antiguedad=14)
+        if resultado_2sem["error"] is not None:
+            # La ampliación falló, pero lo de una semana sigue sirviendo.
+            return resultado
+
+        # Se COMBINAN las dos cosechas, no se sustituye una por otra.
+        # Antes se devolvía solo la de dos semanas y se tiraban las
+        # aceptadas de una semana. Hoy eso es inocuo, porque solo se
+        # llega aquí con cero aceptadas y por tanto no hay nada que
+        # perder — pero era una bomba de relojería: en cuanto alguien
+        # ampliara el disparador (por ejemplo a "el país se quedó
+        # corto"), el código habría empezado a descartar noticias en
+        # silencio. Combinar cuesta lo mismo y quita el riesgo.
+        return {
+            "aceptadas": deduplicar_noticias(
+                resultado["aceptadas"] + resultado_2sem["aceptadas"]
+            ),
+            "descartadas_marginales": (
+                resultado["descartadas_marginales"]
+                + resultado_2sem["descartadas_marginales"]
+            ),
+            "error": None,
+        }
 
     # Capa 1: query con site: (estrategia principal)
     query_site = construir_query_site(pais, terminos)

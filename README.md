@@ -229,6 +229,19 @@ pestaña de país en vez de "🆕 Recién generado".
   mitad o menos. Cubre menos medios, pero cubrir menos es mejor que no
   cubrir nada, y la capa 2 sigue actuando después. Si no hay timeout,
   no se gasta ninguna búsqueda adicional.
+- **Al ampliar la ventana, las dos cosechas se COMBINAN** (arreglo del
+  30-sep-2026). El código devolvía solo la búsqueda de dos semanas y
+  tiraba las noticias aceptadas de la de una semana. Hoy eso es inocuo,
+  porque solo se amplía cuando la capa trajo **cero** noticias y por
+  tanto no hay nada que perder — pero era una bomba de relojería: en
+  cuanto alguien ampliara el disparador (por ejemplo a "el país se
+  quedó corto"), el código habría empezado a descartar noticias en
+  silencio. Combinar y deduplicar cuesta lo mismo y quita el riesgo.
+
+  El disparador en sí **no cambió**: se sigue ampliando solo con cero
+  aceptadas. Hacerlo también cuando el país se queda corto se consideró
+  y se descartó, porque dispararía una búsqueda extra en casi todos los
+  países y duplicaría el consumo de SerpAPI.
 - **Fallback automático a 2 semanas:** dentro de las capas 1 y 2, si la
   búsqueda de 1 semana no trae ninguna noticia aceptada, se reintenta
   con un rango de 2 semanas antes de pasar a la siguiente capa (o
