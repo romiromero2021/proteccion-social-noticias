@@ -67,7 +67,7 @@ if "reportes" not in st.session_state:
     st.session_state.reportes = {}
 
 st.title("📰 Resumen Diario de Noticias")
-st.subheader("Programas de Protección Social en Centroamérica y el Caribe")
+st.subheader("Programas de Protección Social en México, Centroamérica y el Caribe")
 
 st.markdown(
     "Esta aplicación combina dos agentes automatizados:\n"

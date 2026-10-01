@@ -1,4 +1,4 @@
-# Resumen Diario: Programas de Protección Social (CA + Caribe)
+# Resumen Diario: Programas de Protección Social (México, CA + Caribe)
 
 App con dos agentes que recolectan y resumen noticias diarias sobre
 programas de protección social en Costa Rica, Cuba, El Salvador,
@@ -424,12 +424,28 @@ enlace no corresponde al titular y no se toca nada), y si algo no
 cuadra se devuelve el título tal cual. **Es preferible un titular
 cortado a uno inventado.**
 
-El trozo que viene del slug llega sin tildes ni eñes, así que se
+El trozo que viene del slug llega sin tildes ni mayúsculas, así que se
 restauran **copiándolas del extracto** cuando esas mismas palabras
 aparecen allí bien escritas: no se inventa nada, se copia de lo que el
-propio medio publicó. Cuando el extracto no las trae, el titular queda
-completo pero con alguna palabra sin tilde — un defecto mucho menor
-que los puntos suspensivos.
+propio medio publicó. Las tildes se copian sin más. **La mayúscula
+solo si la palabra aparece SIEMPRE en mayúscula en el extracto**: un
+nombre propio ("Cuba") se escribe así en todas sus apariciones,
+mientras que una palabra común solo se capitaliza al empezar una frase
+y por tanto aparecerá también en minúscula. Sin esa comprobación, un
+extracto que empezara por "Los dirigentes…" producía
+"...efectos negativos en Los trabajadores".
+
+**Slugs que omiten las palabras vacías.** CiberCuba convierte "¿Qué se
+puede comprar con el salario de un maestro en Cuba?" en
+`.../puede-comprar-salario-maestro-cuba`. Comparando palabra por
+palabra el solapamiento salía 4 de 11 y la reparación se abortaba; por
+eso la alineación ignora artículos y preposiciones
+(`_PALABRAS_VACIAS_SLUG`) y entonces sale 4 de 4.
+
+**Lo que no tiene arreglo:** cuando el enlace es un identificador puro
+(`diariodecuba.com/economia/1790709308_69171.html`) no hay nada que
+recuperar, y el titular se deja con sus puntos suspensivos. Es
+preferible a inventárselo.
 
 Ojo con los identificadores del final del slug: se descartan
 ("...-893510", "...-20260928-0086"), pero **un año de cuatro cifras se

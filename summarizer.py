@@ -812,8 +812,12 @@ def generar_documento_word(reportes_por_pais: List[Dict]) -> io.BytesIO:
         titulo_texto = f"Resumen de Noticias\nProgramas de Protección Social en {pais_unico}"
         nota_texto = f"Reporte individual del país: {pais_unico}."
     else:
-        titulo_texto = "Resumen de Noticias\nProgramas de Protección Social en Centroamérica y el Caribe"
         nombres = [r["pais"] for r in reportes_por_pais]
+        # México no es Centroamérica ni Caribe: si está en la selección, se
+        # nombra aparte. Si no está, mencionarlo sería inexacto.
+        region = ("México, Centroamérica y el Caribe" if "México" in nombres
+                  else "Centroamérica y el Caribe")
+        titulo_texto = f"Resumen de Noticias\nProgramas de Protección Social en {region}"
         nota_texto = f"Países incluidos: {', '.join(nombres[:-1])} y {nombres[-1]}." if len(nombres) > 1 else f"País incluido: {nombres[0]}."
 
     _agregar_portada(doc, fecha_str, titulo_texto, nota_texto)
