@@ -493,6 +493,46 @@ La institución rectora se incluye a propósito aunque no sea trivia:
 mientras la app trabaja, quien mira aprende de qué habla el reporte
 que está esperando.
 
+## La consulta busca ANCHO; el editor decide fino
+
+Principio que se descubrió con Haití el 30-sep-2026 y que conviene
+tener presente al tocar cualquier lista de términos.
+
+Haití llevaba varios reportes con **una sola noticia**. El panel de
+"revisadas y no incluidas" dio el diagnóstico en diez segundos: solo
+habían llegado **tres candidatas**, y el editor había acertado con las
+tres (publicó la buena, colapsó su duplicado y rechazó una de
+educación). O sea que ni el editor ni la lista de medios eran el
+problema: lo era la consulta.
+
+Los términos franceses eran siete frases largas y exactas —"système de
+retraite", "ministère des affaires sociales", "assurance-vieillesse"—
+y al probarlas contra ocho titulares reales de protección social
+haitiana **casaba exactamente uno**. Por dos razones:
+
+1. **La prensa nombra instituciones, no conceptos.** Los titulares
+   dicen "L'ONA annonce…", "OFATMA renforce…", "le MAST intensifie…",
+   no "le système de retraite".
+2. **Una frase exacta en francés es frágil**: "système de retraite" no
+   casa con "régime de retraite" ni con "les retraités".
+
+La lista nueva combina conceptos cortos (`retraite`, `pension`,
+`salaire minimum`) con las siglas de las instituciones (`ONA`,
+`OFATMA`, `MAST`). La cobertura pasó de 1 de 8 a 7 de 7, y la consulta
+quedó **más corta** que antes.
+
+**El principio general:** desde que el editor decide el tema, la
+consulta ya no tiene que ser precisa — tiene que ser amplia. La
+búsqueda aporta cobertura, el editor aporta criterio. Optimizar la
+consulta para la precisión es resolver dos veces el mismo problema, y
+se pagan noticias perdidas. En la capa 1 el riesgo de ruido es además
+mínimo, porque la consulta ya va restringida a medios curados.
+
+Las listas en español no se han tocado porque sus países llegan al
+cupo, pero si alguno se seca, esto es lo primero que hay que mirar: lo
+más probable es que ayude añadir las siglas de sus instituciones
+(IGSS, CCSS, IMSS, INSS, IHSS, ISSS, CSS, CNSS) en vez de más frases.
+
 ## Mantenimiento: las listas de medios
 
 `SITIOS_PAIS` en `scraper.py` es el corazón del sistema: un medio que

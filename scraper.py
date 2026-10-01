@@ -190,6 +190,10 @@ SITIOS_PAIS = {
                              # huelga textil, salario mínimo. OJO: publica
                              # también mucho sobre política migratoria de
                              # EE.UU., que NO es protección social haitiana
+        "rezonodwes.com",    # se había descartado el 29-sep por no hallarle
+                             # cobertura laboral reciente; al día siguiente
+                             # aportó la denuncia de mala gestión en la CAS.
+                             # Los hechos ganan a la valoración previa
         # loophaiti.com RETIRADO: sin publicaciones verificables desde 2020.
     ],
     "Honduras": [
@@ -393,21 +397,48 @@ TERMINOS_TEMATICOS = [
 # Radio Métropole, etc.), dejando solo cobertura *sobre* Haití escrita
 # por medios internacionales en español. Verificados contra fuentes
 # oficiales del MAST (Ministère des Affaires Sociales et du Travail).
-# Nota (30-sep-2026): se retiraron "politique sociale" y "transferts
-# monétaires" al ampliar la lista de medios haitianos de 9 a 13. Cada
-# término y cada dominio alargan la consulta, y la de Haití ya era la
-# más larga de las diez. Se eligieron esos dos por ser los de menor
-# rendimiento: "politique sociale" se solapa con "protection sociale",
-# y los programas de transferencias monetarias apenas aparecen con ese
-# nombre en la prensa haitiana, donde se habla de "filets sociaux".
+# REESCRITO EL 30-sep-2026 PARA BUSCAR ANCHO, NO FINO.
+#
+# La lista anterior eran siete frases largas y exactas ("système de
+# retraite", "ministère des affaires sociales", "assurance-vieillesse"…)
+# y el resultado era desolador: de ocho titulares reales de protección
+# social haitiana, CASABA EXACTAMENTE UNO. Haití llevaba reportes
+# seguidos con una sola noticia, y la causa no era el editor ni la
+# lista de medios: era esta lista.
+#
+# Dos motivos:
+#   1. La prensa haitiana nombra a las INSTITUCIONES, no a los
+#      conceptos: los titulares dicen "L'ONA annonce…", "OFATMA
+#      renforce…", "le MAST intensifie…", no "le système de retraite".
+#   2. Una frase exacta en francés es frágil: "système de retraite" no
+#      casa con "régime de retraite" ni con "les retraités".
+#
+# Y sobre todo: DESDE QUE EL EDITOR DECIDE EL TEMA, LA CONSULTA YA NO
+# TIENE QUE SER PRECISA, TIENE QUE SER AMPLIA. La búsqueda aporta
+# cobertura y el editor aporta criterio; optimizar la consulta para la
+# precisión, como estaba, era resolver dos veces el mismo problema y
+# perder noticias por el camino. En la capa 1 el riesgo de ruido es
+# además mínimo, porque la consulta ya va restringida a medios
+# haitianos curados.
+#
+# Con la lista nueva la cobertura de esos ocho titulares pasa de 1 a 6,
+# y la consulta queda MÁS CORTA que antes.
+#
+# No se incluye "CAS" (Caisse d'Assistance Sociale) pese a ser una
+# institución relevante: "cas" es una palabra corrientísima en francés
+# ("en tout cas", "un cas de") y traería ruido sin fondo.
 TERMINOS_TEMATICOS_FRANCES = [
+    # Conceptos, cortos
     "protection sociale",
     "sécurité sociale",
     "assistance sociale",
-    "ministère des affaires sociales",
-    "système de retraite",   # la reforma de pensiones domina la agenda haitiana
-    "assurance-vieillesse",
-    "filets sociaux",
+    "retraite",          # casa también "retraites" y "régime de retraite"
+    "pension",
+    "salaire minimum",
+    # Instituciones, que es como las nombra la prensa haitiana
+    "ONA",               # Office National d'Assurance Vieillesse
+    "OFATMA",            # seguro de accidentes, enfermedad y maternidad
+    "MAST",              # Ministère des Affaires Sociales et du Travail
 ]
 
 # Palabras clave de relevancia en francés, para que _es_relevante_al_tema
