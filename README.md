@@ -553,6 +553,74 @@ capas distintas. Ahora aparecen con nota vacía y la razón «el editor no
 la puntuó». Siguen sin publicarse: no colarse por omisión era lo
 correcto; lo que estaba mal era hacerlo en silencio.
 
+#### El anuncio y la evidencia (21-oct-2026, Cuba)
+
+El panel de descartes de Cuba, con los términos nuevos ya en marcha,
+dejó ver un sesgo del editor que llevaba ahí desde el principio y que
+no se había visto porque antes esas noticias ni siquiera llegaban:
+
+| nota | titular | motivo que dio el editor |
+|------|---------|--------------------------|
+| 1/3 | La inflación interanual roza el 30 % … el salario medio por debajo de diez dólares | «datos macroeconómicos, sin medida concreta» |
+| 1/3 | Salario medio estatal en Cuba: poco más de nueve dólares | «cifras salariales, sin anuncio de programa» |
+| 1/3 | …hambre, apagones y pensiones insuficientes… | «solo menciona pensiones sin política concreta» |
+
+Los tres motivos dicen lo mismo: **falta un anuncio**. El editor había
+aprendido que una noticia de protección social es una noticia sobre
+algo que el Estado *hace*, y descartaba la evidencia sobre lo que
+*pasa*. Para un boletín de monitoreo eso es exactamente al revés de lo
+que se necesita: que el salario medio estatal no llegue a diez dólares
+mide si el sistema cumple su función, que es lo que el analista
+monitorea. La definición de la nota 3 —«una política, programa o
+institución PÚBLICA»— es institución-céntrica, y la regla de
+comunicados oficiales que se añadió esa misma mañana reforzó el sesgo
+sin querer: daba un piso a los anuncios y nada a los datos.
+
+Regla nueva, **COBERTURA, SUFICIENCIA Y EROSIÓN**: van con 3 los datos
+sobre cuánto alcanza una pensión o un salario, qué parte de la
+población está cubierta, cuántos cotizan y cómo se erosiona el poder
+adquisitivo de las prestaciones, **sin necesidad de que haya anuncio**.
+«Sin política concreta» y «no hay programa» quedan vetados por nombre
+como motivos de descarte para este tipo de dato. El límite: la
+macroeconomía general (PIB, tipo de cambio, deuda, bolsa) no entra por
+sí sola, sino cuando se pone en relación con salarios, pensiones,
+empleo o prestaciones.
+
+Las cuatro notas con 0/3 de ese mismo panel —ONU, plan migratorio
+estadounidense, conmemoración de los trabajadores bancarios— estaban
+bien descartadas.
+
+#### Dos rechazos que no eran del editor (21-oct-2026)
+
+El mismo panel destapó dos cosas que el editor estaba decidiendo y que
+no le tocan, porque son objetivas:
+
+**Redes sociales.** Entre las candidatas de Cuba apareció
+`facebook.com/DIARIODECUBA/posts/…`. El editor lo descartó con buen
+criterio («propuesta informal, no comunicado oficial»), pero no debería
+haber llegado: el título de un post es el principio del propio texto,
+no hay titular ni fecha fiables y el enlace lleva a un muro que puede
+pedir sesión. `_es_dominio_no_periodistico` rechaza ahora Facebook, X,
+Instagram, TikTok, YouTube, Telegram, LinkedIn, Reddit y
+news.google.com, con el mismo rango que las páginas de índice.
+
+**Entregas numeradas de un programa.** Guatemala publicó «Noticiero
+Seguridad Social Ahora, Emisión 65» del IGSS: el equivalente en vídeo
+de una página de índice. Apareció justo al añadir «IGSS» a los
+términos, porque la sigla casa con todas las entregas del noticiero.
+`_es_entrega_de_programa` detecta «Emisión/Edición/Boletín/Capítulo/
+Episodio + número de hasta tres cifras» y los títulos que arrancan con
+«Noticiero/Informativo/Radiorevista/Podcast».
+
+El patrón deja fuera a propósito «programa», «entrega» y «número»: en
+esta materia son palabras corrientes seguidas de cifra, y la regla
+habría tumbado titulares legítimos como «IGSS **entrega 150**
+pensiones», «**Programa 100** días» o «el **número 50** de
+beneficiarios». El límite de tres cifras evita además que «Edición
+2026» —que suele acompañar a una convocatoria real— caiga en la regla.
+Ambos casos están cubiertos en `test_cuba_y_programas.py`, con sus
+falsos positivos.
+
 #### La excepción no contributiva (21-oct-2026)
 
 El límite de la sanidad, tal como quedó el 30-sep, tenía un hueco. El

@@ -985,6 +985,79 @@ def _parece_archivo_antiguo(item: Dict) -> bool:
     return not hay_anio_reciente
 
 
+# Dominios que no son prensa: redes sociales, vídeo, agregadores. Una
+# publicación suya no es una noticia, aunque la firme un medio real.
+#
+# CASO CONFIRMADO (21-oct-2026, Cuba): entre las candidatas apareció
+# "https://www.facebook.com/DIARIODECUBA/posts/…", un apunte de Diario
+# de Cuba en su página de Facebook. El editor lo descartó con buen
+# criterio ("propuesta informal, no comunicado oficial"), pero no
+# debería haber tenido que decidirlo: el título de un post es el
+# principio del propio texto, no hay titular ni fecha de publicación
+# fiables, y el enlace lleva a un muro que puede exigir sesión. Es un
+# rechazo objetivo, de los que corresponden a los filtros y no al
+# editor.
+_DOMINIOS_NO_PERIODISTICOS = (
+    "facebook.com", "fb.com", "fb.watch",
+    "x.com", "twitter.com", "t.co",
+    "instagram.com", "threads.net", "tiktok.com",
+    "youtube.com", "youtu.be", "vimeo.com",
+    "linkedin.com", "reddit.com", "pinterest.com",
+    "whatsapp.com", "t.me", "telegram.me",
+    "news.google.com",
+)
+
+
+def _es_dominio_no_periodistico(item: Dict) -> bool:
+    """True si el enlace apunta a una red social o plataforma de vídeo."""
+    dominio = urlparse(item.get("link", "") or "").netloc.lower()
+    if dominio.startswith("www."):
+        dominio = dominio[4:]
+    if not dominio:
+        return False
+    return any(dominio == d or dominio.endswith("." + d)
+               for d in _DOMINIOS_NO_PERIODISTICOS)
+
+
+# Entregas numeradas de un programa o boletín periódico: no son
+# noticias, son el contenedor donde la institución publica las suyas.
+#
+# CASO CONFIRMADO (21-oct-2026, Guatemala): el reporte incluyó
+# "Noticiero Seguridad Social Ahora, Emisión 65", del IGSS. Es el
+# equivalente en vídeo de una página de índice, y apareció justo al
+# añadir "IGSS" a los términos de búsqueda: la sigla casa con todas
+# las entregas del noticiero del instituto.
+_ENTREGA_NUMERADA = re.compile(
+    r"\b(emisi[oó]n|edici[oó]n|boletín|boletin|cap[ií]tulo|episodio)\s*"
+    r"(?:n[.º°]?\s*)?(\d{1,3})\b",
+    re.IGNORECASE,
+)
+# Deliberadamente NO están "programa", "entrega" ni "número": en esta
+# materia son palabras corrientes seguidas de cifra. "IGSS entrega 150
+# pensiones", "Programa 100 días" o "número 50 de beneficiarios" son
+# titulares legítimos, y rechazarlos costaría mucho más que dejar
+# pasar alguna entrega de un programa llamada de otra manera.
+_EMPIEZA_COMO_PROGRAMA = re.compile(
+    r"^\s*(noticiero|informativo|radiorevista|podcast)\b", re.IGNORECASE
+)
+
+
+def _es_entrega_de_programa(item: Dict) -> bool:
+    """
+    True si el título es una entrega numerada de un programa o boletín
+    periódico ("Emisión 65", "Boletín 12") o arranca nombrando el
+    programa ("Noticiero …").
+
+    El número se limita a tres cifras a propósito: así "Edición 2026"
+    —que es un año, y suele acompañar a una convocatoria real— no cae
+    en la regla.
+    """
+    titulo = item.get("title") or ""
+    if _EMPIEZA_COMO_PROGRAMA.match(titulo):
+        return True
+    return bool(_ENTREGA_NUMERADA.search(titulo))
+
+
 # Fragmentos de URL propios de páginas de LISTADO, no de artículos:
 # etiquetas, secciones, archivos, autores, resultados de búsqueda.
 _RUTAS_DE_INDICE = (
@@ -1218,10 +1291,16 @@ def _buscar_una_vez(
     #    verificador LLM cae en las mismas trampas de topónimo que los
     #    filtros de texto, así que este caso no puede quedar a su juicio.
     #  - página de listado en vez de noticia (ver _es_pagina_indice).
+    #  - publicada en una red social o plataforma de vídeo, que no es
+    #    prensa (ver _es_dominio_no_periodistico).
+    #  - entrega numerada de un programa o boletín periódico (ver
+    #    _es_entrega_de_programa).
     noticias_crudas = [
         item for item in noticias_crudas
         if _dentro_del_rango(item, dias_maximos_antiguedad)
         and not _es_pagina_indice(item)
+        and not _es_dominio_no_periodistico(item)
+        and not _es_entrega_de_programa(item)
         and not _dominio_curado_de_otro_pais(item, pais)
         and not _es_de_otro_pais_con_certeza(item, pais)
     ]
