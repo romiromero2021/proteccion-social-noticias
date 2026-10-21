@@ -287,14 +287,33 @@ if ejecutar_todos:
     # pareja: cada país son ~6 pasos (1 búsqueda + 5 resúmenes).
     PASOS_POR_PAIS = n_noticias + 1
     pasos_totales = total * PASOS_POR_PAIS
-    estado = {"pasos": 0, "dato": 0}
+    estado = {"pasos": 0, "dato": 0, "pais_en_ficha": None}
 
     def _pintar_ficha(pais_actual: str):
-        """Dibuja la ficha del país en curso. Solo cambia cuando cambia
-        el país, así que redibujarla en cada paso no parpadea."""
+        """Dibuja la ficha del país en curso.
+
+        Dos cuidados, los dos por el mismo motivo. Streamlit no vuelve a
+        dibujar el hueco desde cero: compara el árbol nuevo con el
+        anterior elemento por elemento, y si el nuevo tiene MENOS
+        elementos que el viejo, los que sobran se quedan en pantalla.
+        Por eso:
+
+        1. La ficha emite siempre el MISMO número de elementos para los
+           diez países. Los sitios históricos van en un solo markdown,
+           no uno por sitio: México y Guatemala tienen tres y los demás
+           dos, y esa diferencia dejaba colgada la curiosidad del país
+           anterior (el último elemento) al pasar de tres sitios a dos.
+        2. Se vacía el hueco antes de volver a llenarlo.
+
+        Y se redibuja solo al cambiar de país, que es lo único que
+        cambia el contenido: así no parpadea en cada paso.
+        """
+        if estado["pais_en_ficha"] == pais_actual:
+            return
+        estado["pais_en_ficha"] = pais_actual
+        area_ficha.empty()
         datos = ficha(pais_actual)
         if not datos:
-            area_ficha.empty()
             return
         with area_ficha.container(border=True):
             st.markdown(f"### {pais_actual}")
@@ -305,9 +324,10 @@ if ejecutar_todos:
             with col_b:
                 st.markdown(f"**Colinda con**  \n{datos['fronteras']}")
                 st.markdown(f"**Moneda**  \n{datos['moneda']}")
-            st.markdown("**Sitios históricos y arqueológicos**")
-            for sitio in datos["sitios"]:
-                st.markdown(f"- {sitio}")
+            st.markdown(
+                "**Sitios históricos y arqueológicos**\n\n"
+                + "\n".join(f"- {sitio}" for sitio in datos["sitios"])
+            )
             st.markdown(f"**Protección social**  \n{datos['institucion']}")
             st.info(datos["curiosidad"])
 

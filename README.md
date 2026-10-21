@@ -384,6 +384,52 @@ de qué trata la noticia, no de qué palabras contiene— y es justo por
 esto que la decisión pasó al modelo. **Si el criterio cambia, se ajusta
 ahí: no hay que tocar ninguna lista.**
 
+#### La excepción no contributiva (21-oct-2026)
+
+El límite de la sanidad, tal como quedó el 30-sep, tenía un hueco. El
+21-oct el editor descartó con **0/3** esta nota de México, y la razón
+que dio —«campaña informativa, no programa público»— no describía el
+hecho:
+
+> *Gobierno de México invertirá 18 mdp en tratamientos hormonales para
+> mujeres sin seguridad social* (El Heraldo de México, 19-oct)
+
+Es un programa público de la Secretaría de Salud, con 18 millones de
+pesos asignados, impulsado por el CNEGSSR, y **dirigido expresamente a
+mujeres sin seguridad social**. La campaña «Hablemos de menopausia» es
+un componente del anuncio, no el anuncio. El editor vio «salud» y
+«campaña» y aplicó el límite del 30-sep sin notar a quién iba dirigido
+el beneficio.
+
+Lo que faltaba era nombrar lo evidente: **una prestación pública
+dirigida a quien no tiene seguridad social es protección social no
+contributiva, sea del sector que sea.** Ese hueco de cobertura es
+precisamente el objeto del monitoreo. Ahora es una regla con precedencia
+declarada sobre la de educación y salud, y el criterio es textual y
+comprobable: lo que decide no es el sector del que habla la noticia,
+sino **a quién va dirigido el beneficio** («población abierta», «sin
+seguridad social», «no asegurados», «régimen no contributivo», trabajo
+informal, trabajadoras del hogar, campesinos). Se añadió además que un
+anuncio acompañado de campaña de comunicación sigue siendo un programa
+si hay un monto, un padrón o una prestación concreta.
+
+Se corrigió al mismo tiempo un defecto independiente que este caso dejó
+a la vista: **el 0 se estaba usando para casos de borde.** El 0 es para
+lo que está fuera del asunto —otro país, un acto ceremonial, un delito,
+una lotería, publicidad—, no para lo dudoso. Un programa público con
+presupuesto no puede ser 0; en la duda, 1 o 2. La diferencia importa
+porque el 0 es el único que no admite relectura: una nota en 1 o 2
+queda ordenada y visible en el panel de descartes, mientras que el 0
+dice «esto no era del tema» y cierra la discusión.
+
+Riesgo asumido, que conviene vigilar: en México la frase «sin seguridad
+social» aparece con frecuencia en la cobertura sanitaria, porque
+IMSS-Bienestar atiende justamente a esa población. Es previsible que
+entren más notas de salud dirigida a no asegurados. Para un boletín de
+desarrollo social eso es correcto —es cobertura no contributiva—, pero
+si empieza a desplazar a las pensiones y lo laboral, el ajuste es
+bajar esas notas de 3 a 2 en lugar de volver a excluirlas.
+
 ### Lo que esto te da además
 
 Cada noticia lleva su **nota y su razón**, visibles en la app, y hay un
@@ -508,6 +554,43 @@ acordarse de actualizar ese archivo. Hay una prueba automática
 La institución rectora se incluye a propósito aunque no sea trivia:
 mientras la app trabaja, quien mira aprende de qué habla el reporte
 que está esperando.
+
+### El elemento que se quedaba colgado (21-oct-2026)
+
+Al pasar de un país a otro, la curiosidad del país anterior se quedaba
+en pantalla. El caso que se vio: la de México («es el país de América
+con más sitios inscritos en la lista del Patrimonio Mundial») seguía
+abajo mientras ya se procesaba Nicaragua.
+
+La causa no estaba en los datos sino en cómo se dibujaban. Streamlit no
+rehace el hueco (`st.empty()`) desde cero: compara el árbol nuevo con
+el anterior **elemento por elemento**, y si el nuevo tiene *menos*
+elementos que el viejo, los que sobran se quedan pintados. La ficha
+emitía **un `st.markdown` por sitio histórico**, y México y Guatemala
+tienen tres sitios mientras los otros ocho tienen dos. Al pasar de tres
+a dos, el árbol nuevo era un elemento más corto y el último del
+anterior —justamente el `st.info` de la curiosidad— quedaba huérfano en
+pantalla.
+
+Que la consulta sea ahora más rápida lo volvió más visible: los
+redibujados se suceden más seguido.
+
+Arreglo, en tres partes:
+
+1. **Número de elementos fijo.** Los sitios van en un solo `markdown`
+   con las viñetas dentro, no uno por sitio. Así la ficha emite los
+   mismos elementos para los diez países y el desajuste no puede
+   ocurrir, por muchos sitios que se añadan a una ficha.
+2. **Se vacía el hueco** antes de volver a llenarlo.
+3. **Se redibuja solo al cambiar de país**, que es lo único que cambia
+   el contenido. Antes se redibujaba en cada paso de la barra.
+
+`test_ficha_residual.py` vigila la parte que puede regresar: falla si
+vuelve a aparecer un bucle que emita elementos dentro de la ficha, si
+el número de `markdown` cambia, o si algún sitio trae un salto de línea
+que rompa la lista. La lección general, que vale para cualquier otro
+hueco que se pinte así: **dentro de un `st.empty()` que se reescribe,
+el número de elementos tiene que ser constante.**
 
 ## La consulta busca ANCHO; el editor decide fino
 
