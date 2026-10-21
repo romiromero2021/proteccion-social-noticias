@@ -367,12 +367,85 @@ INSTITUCIONES_PAIS = {
 # institución para ampliar la cobertura. Se combinan con OR en una
 # sola query (no se multiplica el número de llamadas a SerpAPI).
 TERMINOS_TEMATICOS = [
-    "programas de protección social",
+    # Conceptos. "protección social" sustituye a "programas de
+    # protección social": es más corta y estrictamente más amplia (casa
+    # todo lo que casaba la larga, y además los titulares que hablan de
+    # protección social sin la palabra "programas", que son la mayoría).
+    "protección social",
     "seguridad social",
     "desarrollo social",
     "asistencia social",
     "transferencias monetarias",
+    "pensiones",
+    # Laboral y salarial. El alcance temático se amplió a esto el
+    # 30-sep-2026, pero SOLO en el prompt del editor: esta lista se
+    # quedó como estaba y el Agente 1 siguió sin poder traer la materia
+    # prima. El desajuste se vio el 21-oct con Guatemala (ver README).
+    # Van también las formas en singular y plural porque las comillas
+    # desactivan la lematización de Google: "laboral" entrecomillado no
+    # casa con "laborales".
+    "salario mínimo",
+    "laboral",
+    "laborales",
+    "trabajadores",
 ]
+
+# Siglas de las instituciones de protección social de cada país. Se
+# suman a los términos temáticos en la CLÁUSULA DE TEMA de las dos
+# capas de búsqueda.
+#
+# POR QUÉ ESTO NO REPITE EL ERROR QUE SE CORRIGIÓ EN construir_query:
+# allí las instituciones se usaban como ancla de PAÍS, con OR frente al
+# nombre del país, y eso sí era peligroso — "MIDES" existe en Guatemala
+# y en Panamá, "MTSS" en Cuba y en Uruguay, así que una noticia podía
+# colarse en el reporte del país equivocado. Aquí van en la cláusula de
+# TEMA, que siempre se combina con el ancla de país (capa 2) o con la
+# lista de dominios nacionales (capa 1). "MIDES" AND "Guatemala" no
+# tiene esa ambigüedad.
+#
+# El motivo de fondo es el mismo que llevó a reescribir la lista
+# francesa de Haití: LA PRENSA NOMBRA A LAS INSTITUCIONES, NO A LOS
+# CONCEPTOS. Los titulares dicen "el IGSS anuncia", "la CCSS aprueba",
+# "el IMSS amplía" mucho más a menudo que "seguridad social".
+#
+# Haití no está: sus instituciones (ONA, OFATMA, MAST) ya van en
+# TERMINOS_TEMATICOS_FRANCES, que es la lista que se usa para ese país.
+INSTITUCIONES_TEMATICAS = {
+    "Costa Rica": ["CCSS", "IMAS"],
+    "Cuba": ["MTSS"],
+    "El Salvador": ["ISSS", "ISP"],
+    "Guatemala": ["IGSS", "Mides"],
+    "Honduras": ["IHSS", "Sedesol"],
+    "México": ["IMSS", "ISSSTE"],
+    "Nicaragua": ["INSS", "Mifan"],
+    "Panamá": ["CSS", "Mides"],
+    "República Dominicana": ["CNSS", "Supérate"],
+}
+
+
+def terminos_del_pais(pais: str) -> List[str]:
+    """Términos temáticos + siglas institucionales de ese país."""
+    return list(TERMINOS_TEMATICOS) + list(INSTITUCIONES_TEMATICAS.get(pais, []))
+
+
+def terminos_cortos_del_pais(pais: str) -> List[str]:
+    """
+    Versión reducida para el reintento cuando SerpAPI agota el tiempo
+    de espera (ver _buscar_prensa_pais).
+
+    No es "los N primeros de la lista": es la selección con mejor
+    relación entre caracteres y cobertura. Las siglas institucionales
+    miden cuatro u ocho caracteres y aparecen en los titulares mucho
+    más que los conceptos, así que se conservan enteras; de los
+    conceptos se queda el más amplio, y uno laboral, porque son dos
+    familias distintas de noticia y perder una entera sería peor que
+    acortar las dos.
+    """
+    if pais == "Haití":
+        return list(TERMINOS_TEMATICOS_FRANCES)[:5]
+    return (["protección social", "seguridad social", "laboral"]
+            + list(INSTITUCIONES_TEMATICAS.get(pais, [])))
+
 # Nota (29-sep-2026): aquí había un sexto término, "CEPAL protección
 # social". Se retiró porque no podía funcionar: en la capa 1 la query
 # va restringida con site: a medios de prensa nacionales, y cepal.org
@@ -544,7 +617,7 @@ def construir_query_site(pais: str, terminos: Optional[List[str]] = None,
     ("programas de protección social" OR "seguridad social" OR ...)
     (site:laprensa.hn OR site:latribuna.hn OR site:tiempo.hn OR site:elheraldo.hn)
     """
-    terminos = terminos or TERMINOS_TEMATICOS
+    terminos = terminos or terminos_del_pais(pais)
     if pais == "Haití":
         # Para Haití se usan SOLO los términos en francés, no la suma de
         # español + francés. La prensa haitiana (Le Nouvelliste,
@@ -600,7 +673,7 @@ def construir_query(pais: str, terminos: Optional[List[str]] = None) -> str:
     ("programas de protección social" OR "seguridad social" OR ...)
     ("Panamá" OR "panameño" OR "panameña" OR "panameños" OR "panameñas")
     """
-    terminos = terminos or TERMINOS_TEMATICOS
+    terminos = terminos or terminos_del_pais(pais)
     if pais == "Haití":
         # Para Haití se usan SOLO los términos en francés, no la suma de
         # español + francés. La prensa haitiana (Le Nouvelliste,
@@ -1365,14 +1438,21 @@ def _buscar_prensa_pais(
     # acaba de quedarse colgada rara vez funciona: lo que se cuelga son
     # las consultas largas con el operador site: en la pestaña de
     # Noticias. Confirmado el 30-sep-2026 con México, cuya consulta
-    # mide 327 caracteres. Se recorta por los dos lados —dos términos
-    # temáticos y cuatro medios— porque el grueso de la longitud son
-    # los dominios, no los términos. La versión corta cubre menos
-    # medios, pero cubrir menos es mejor que no cubrir nada, y la capa
-    # 2 sigue actuando después.
+    # mide 327 caracteres. Se recorta por los dos lados —términos y
+    # medios— porque el grueso de la longitud son los dominios.
+    # La versión corta cubre menos medios, pero cubrir menos es mejor
+    # que no cubrir nada, y la capa 2 sigue actuando después.
+    #
+    # 21-oct-2026: el recorte ya NO se hace cortando la lista por el
+    # principio. Con `max_terminos=2` se quedaba con los dos primeros
+    # términos conceptuales y tiraba justo las siglas institucionales,
+    # que son lo más corto y lo que más casa en titulares ("el IGSS
+    # anuncia…"). Ahora usa terminos_cortos_del_pais(), que conserva
+    # las siglas: la consulta sale aún más corta Y con mejor
+    # rendimiento por carácter.
     if _es_error_de_tiempo_agotado(resultado["error"]):
         resultado = _buscar_con_fallback_fecha(
-            construir_query_site(pais, terminos, max_terminos=2, max_sitios=4)
+            construir_query_site(pais, terminos_cortos_del_pais(pais), max_sitios=4)
         )
 
     # Si la capa 1 falló, NO se abandona el país: se intenta igual la

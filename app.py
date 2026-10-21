@@ -488,8 +488,12 @@ if st.session_state.reportes:
                     f"🔍 {len(reporte['descartadas'])} noticia(s) revisadas y no incluidas — ver por qué"
                 ):
                     for d in reporte["descartadas"]:
+                        # nota None = el editor no la puntuó. Se muestra
+                        # como tal en vez de "None/3".
+                        etiqueta = ("sin nota" if d.get("nota") is None
+                                    else f"{d['nota']}/3")
                         st.markdown(
-                            f"**{d['nota']}/3** · {d['titulo']}  \n"
+                            f"**{etiqueta}** · {d['titulo']}  \n"
                             f"*{d.get('fuente','')}* — {d.get('razon','')}"
                         )
                         if d.get("link"):

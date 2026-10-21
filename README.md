@@ -384,6 +384,175 @@ de qué trata la noticia, no de qué palabras contiene— y es justo por
 esto que la decisión pasó al modelo. **Si el criterio cambia, se ajusta
 ahí: no hay que tocar ninguna lista.**
 
+#### Comunicados oficiales y el resumen de relleno (21-oct-2026)
+
+Dos consultas del mismo día, a las 12:31 y a las 13:13, dieron notas
+distintas a la misma noticia:
+
+> *ANTEPONE LOS DERECHOS LABORALES DE LOS GUATEMALTECOS* — Congreso de
+> la República de Guatemala
+
+A las 12:31 se publicó; a las 13:13 Guatemala quedó en cero con ocho
+candidatas revisadas.
+
+> **Corrección (misma tarde).** Aquí se escribió que «el editor estaba
+> echando una moneda». **Era falso.** El panel de descartes mostró
+> después que el comunicado no estaba entre las ocho candidatas de la
+> segunda consulta: no se puntuó bajo, nunca llegó. Lo que varió fue la
+> cosecha del Agente 1, no el criterio del editor. La conclusión se
+> sacó de dos reportes y se afirmó con seguridad sin mirar el panel,
+> que era el dato que lo decidía. Ver «la recall de Guatemala», abajo.
+
+La regla que sigue se mantuvo de todos modos, porque el caso sí
+destapaba un hueco real: el editor no tenía criterio para un comunicado
+oficial escueto, y sin criterio la nota depende de cómo caiga.
+
+La noticia es real y es del tema. El titular en mayúsculas y sin sujeto
+es el estilo de la casa en `congreso.gob.gt` («ACCIONES A FAVOR DE LOS
+TRABAJADORES DE GUATEMALA», «SALA EMITE DICTAMEN A INICIATIVAS EN TEMAS
+LABORALES»), no un título truncado. Lo que tiene de flojo es el
+contenido: anuncia una posición, no una decisión. Y ahí el editor no
+tenía regla, así que oscilaba entre «es del tema» y «no dice nada».
+
+Ahora la tiene: **un comunicado del Congreso, de un ministerio o de la
+institución de seguridad social del país sobre un asunto del boletín
+vale al menos 2**, aunque solo exprese una prioridad; al analista le
+sirve saber que el legislativo se mueve en ese tema. Llega a 3 solo si
+trae algo concreto —una iniciativa identificable, una votación, una
+cifra, una fecha—. Lo escueto se castiga con la nota, no con la
+exclusión.
+
+El segundo defecto estaba en el resumen, y es independiente:
+
+> «El Congreso de la República de Guatemala ha señalado la prioridad de
+> garantizar los derechos laborales de los guatemaltecos. Esta posición
+> se refleja en la agenda del órgano legislativo, que busca fortalecer
+> la protección social en el país. El enfoque se centra en la defensa y
+> promoción de los derechos laborales como elemento central de la
+> política pública.»
+
+Tres frases, un solo hecho, dicho tres veces. El prompt pedía «máximo 3
+frases» y el modelo leyó el máximo como una cuota —el mismo error que
+el cupo de noticias, una capa más abajo—. Se corrigió: **el largo lo
+manda el material**, una frase es una respuesta correcta, y están
+vetadas por nombre las fórmulas de relleno («esto refleja la prioridad
+del tema en la agenda pública», «el enfoque se centra en…»).
+
+`test_comunicados.py` cubre las dos reglas.
+
+#### Pendiente: la recall de Guatemala
+
+**RESUELTO el mismo día.** El panel de descartes de Guatemala zanjó la
+duda y además corrigió un diagnóstico mío equivocado. Las ocho
+candidatas revisadas fueron:
+
+| nota | titular | fuente |
+|------|---------|--------|
+| 1/3 | Elecciones 2027: diputados … interpelación al Mides | Prensa Libre |
+| 1/3 | Guatemala avanza en acciones territoriales … servicios de salud | guatemala.gob.gt |
+| 1/3 | El 60,9 % de las familias del Triángulo Norte … escasez de alimentos | Emisoras Unidas |
+| 0/3 | El IGSS celebra sus 80 años con una actividad conmemorativa | igssgt.org |
+| 0/3 | El IGSS, un legado de la Revolución de Octubre … | igssgt.org |
+| 0/3 | Cerrarán bancos en Guatemala por feriado de Revolución de 1944 | Prensa Latina |
+| 0/3 | Funcionarios asisten a honras fúnebres de Solórzano Foppa | AGN |
+| 0/3 | Guatemala conmemora los 82 años de la Revolución de 1944 | Infobae |
+
+Dos lecturas, y la segunda es la importante:
+
+1. **El editor acertó con las ocho.** Seis son la efeméride de la
+   Revolución de Octubre y actos ceremoniales. Ninguna es noticia de
+   protección social.
+2. **El comunicado del Congreso no está en la lista.** No se puntuó
+   bajo: **nunca llegó**. Mi diagnóstico de unas horas antes —«el
+   editor está echando una moneda»— era falso, y lo había afirmado con
+   seguridad a partir de dos reportes sin mirar el panel. Lo que varía
+   entre consultas no es el criterio del editor: es la cosecha del
+   Agente 1.
+
+La hipótesis de los términos quedó confirmada. `TERMINOS_TEMATICOS`
+eran cinco conceptos —«programas de protección social», «seguridad
+social», «desarrollo social», «asistencia social», «transferencias
+monetarias»— y **ninguno casa con un titular laboral**. Medido contra
+seis titulares guatemaltecos reales y verificables del tema (la
+iniciativa de repartidores con afiliación al IGSS, la Ley de
+Teletrabajo, los comunicados del Congreso), la cobertura de la lista
+vieja era **0 de 6**.
+
+El alcance se amplió a lo laboral el 30-sep **solo en el prompt del
+editor**. Era la mitad del trabajo: se le dio criterio al editor y no
+se le dio materia prima al buscador. El mismo desajuste que tuvo Haití
+en francés, en el otro idioma.
+
+##### La lista nueva
+
+Dos cambios, los dos siguiendo el precedente de Haití —**la prensa
+nombra a las instituciones, no a los conceptos**—:
+
+- `TERMINOS_TEMATICOS` pasa a ser **ancha y corta**:
+  «protección social» (sustituye a «programas de protección social»:
+  más corta y estrictamente más amplia), «seguridad social»,
+  «desarrollo social», «asistencia social», «transferencias
+  monetarias», «pensiones», «salario mínimo», «laboral», «laborales»,
+  «trabajadores». Van singular y plural porque las comillas desactivan
+  la lematización de Google: `"laboral"` no casa con «laborales».
+- `INSTITUCIONES_TEMATICAS`, nueva: las siglas de cada país (IGSS,
+  CCSS, IMSS, ISSSTE, INSS, IHSS, ISSS, CSS, CNSS, Supérate…) se suman
+  a la **cláusula de tema**. Esto NO repite el error que se corrigió en
+  `construir_query`: allí las instituciones hacían de ancla de *país*,
+  con OR frente al nombre, y «MIDES» existe en Guatemala y en Panamá.
+  Aquí van en la cláusula de tema, que siempre se combina con el ancla
+  de país o con los dominios nacionales. «MIDES» AND «Guatemala» no
+  tiene esa ambigüedad.
+
+Medido con el mismo método (`test_terminos.py`):
+
+- Guatemala, titulares del tema que se perdían: **0/6 → 5/6**. El único
+  que sigue fuera es la Ley de Teletrabajo, que no contiene ninguno de
+  los términos; entra por «Congreso» o no entra.
+- De los titulares **ya publicados**, **siete de diez** no casaban con
+  ningún término y estaban llegando de rebote (por el cuerpo del
+  artículo o por la capa 2). Ahora casan de frente: «CCSS proyecta
+  faltante…», «Actualizan salario mínimo…», «…52 % de trabajadores sin
+  IMSS…», «INSS realiza pago de pensiones…». Es decir: la lista vieja
+  no solo perdía lo laboral, sino que **sostenía el resto por
+  casualidad**.
+- El ruido ceremonial del panel (feriado bancario, honras fúnebres,
+  conmemoración) **no casa** con ningún término nuevo.
+
+##### El riesgo: la consulta es más larga
+
+Las consultas de la capa 1 pasan de ~327 a **357–460 caracteres**, y
+327 es justo la longitud de la consulta de México que agotó el tiempo
+de espera el 30-sep. Esto aumenta la exposición a la incidencia
+conocida de SerpAPI (`tbm=nws` con operadores avanzados).
+
+La red de seguridad se reforzó en vez de dejarla como estaba. El
+reintento acortado ya no corta la lista por el principio: con
+`max_terminos=2` se quedaba con los dos conceptos iniciales y tiraba
+justo las siglas, que son lo más corto y lo que más casa. Ahora usa
+`terminos_cortos_del_pais()`, que **conserva las siglas enteras** y deja
+un concepto amplio y uno laboral. Resultado: el reintento mide 156–183
+caracteres (antes del cambio rondaba los 137 pero sin ninguna sigla),
+es decir, más corto que la consulta que falló y con mejor rendimiento
+por carácter.
+
+**Esto no está verificado contra SerpAPI en vivo.** Si empiezan a
+aparecer timeouts en varios países a la vez, la causa más probable es
+la longitud, y el ajuste es recortar `TERMINOS_TEMATICOS` —no la lista
+de medios—.
+
+#### Las candidatas invisibles (21-oct-2026)
+
+Diagnosticando lo anterior salió a la luz un defecto de observabilidad
+en `procesar_pais`: cuando el editor devolvía menos líneas que
+candidatas, las que no venían puntuadas se descartaban con un
+`continue` y **desaparecían sin dejar rastro** — ni publicadas, ni en
+el panel. Mirando el panel era imposible distinguir «esta noticia nunca
+llegó» de «llegó y el editor se saltó su línea», que son dos averías en
+capas distintas. Ahora aparecen con nota vacía y la razón «el editor no
+la puntuó». Siguen sin publicarse: no colarse por omisión era lo
+correcto; lo que estaba mal era hacerlo en silencio.
+
 #### La excepción no contributiva (21-oct-2026)
 
 El límite de la sanidad, tal como quedó el 30-sep, tenía un hueco. El

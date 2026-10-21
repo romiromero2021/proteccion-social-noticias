@@ -423,6 +423,15 @@ def puntuar_candidatas(
         f"población en general; si la noticia acota el beneficio a "
         f"quienes no tienen seguridad social, manda la regla "
         f"anterior.\n\n"
+        f"COMUNICADOS OFICIALES — al menos 2. Un anuncio del Congreso, de "
+        f"un ministerio o de la institución de seguridad social de "
+        f"{pais} sobre un asunto del boletín vale 2 aunque solo exprese "
+        f"una posición o una prioridad y no una decisión ya tomada: al "
+        f"analista le sirve saber que el legislativo se está moviendo en "
+        f"ese tema. Llega a 3 solo si trae algo concreto —una iniciativa "
+        f"identificable, una votación, una cifra, una fecha—. Lo que no "
+        f"puede es quedarse en 0 o 1 por ser escueto: lo escueto se "
+        f"castiga con la nota 2, no con la exclusión.\n\n"
         f"Ojo con dos trampas:\n"
         f"- Que el nombre del país aparezca dentro del nombre de otro "
         f"lugar no lo hace de {pais} (\"Villa El Salvador\" es un "
@@ -490,6 +499,13 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
         f"Extracto original: {snippet}\n\n"
         "Instrucciones importantes:\n"
         "- No inventes datos, cifras ni detalles que no estén en el título o el extracto.\n"
+        "- **El largo lo manda el material, no el máximo.** Si el extracto "
+        "trae un solo hecho, una frase es la respuesta correcta. No rellenes "
+        "hasta las tres frases.\n"
+        "- No repitas la misma idea con otras palabras ni añadas frases de "
+        "relleno del tipo \"esto refleja la prioridad del tema en la agenda "
+        "pública\" o \"el enfoque se centra en...\": no dicen nada y hacen "
+        "parecer informado un resumen que no lo está.\n"
         "- Si el extracto es breve o vago, igual redacta un resumen útil basándote en "
         "lo que el título y el extracto sí permiten afirmar (por ejemplo, el tema "
         "general, la institución involucrada, o la acción mencionada).\n"
@@ -609,11 +625,24 @@ def procesar_pais(
         descartadas = []
     else:
         puntuadas = []
+        sin_puntuar = []
         for i, n in enumerate(candidatas):
             info = notas.get(i)
             if info is None:
-                # Candidata que el editor no puntuó: se trata como
-                # dudosa, no se cuela por omisión.
+                # Candidata que el editor no puntuó: no se cuela por
+                # omisión, pero TAMPOCO desaparece en silencio.
+                #
+                # 21-oct-2026: antes se hacía `continue` y la candidata
+                # se esfumaba sin dejar rastro, ni publicada ni
+                # descartada. Eso hace imposible diagnosticar: al mirar
+                # el panel no se puede distinguir "esta noticia nunca
+                # llegó" de "llegó y el editor se saltó su línea", que
+                # son dos averías distintas y en capas distintas.
+                sin_puntuar.append(
+                    {"titulo": n["titulo"], "fuente": n.get("fuente", ""),
+                     "link": n.get("link", ""), "nota": None,
+                     "razon": "el editor no la puntuó (no se publica por omisión)"}
+                )
                 continue
             puntuadas.append(dict(n, nota=info["nota"], razon=info["razon"]))
 
@@ -625,7 +654,7 @@ def procesar_pais(
             {"titulo": n["titulo"], "fuente": n.get("fuente", ""),
              "link": n.get("link", ""), "nota": n["nota"], "razon": n["razon"]}
             for n in puntuadas if n not in seleccion
-        ]
+        ] + sin_puntuar
 
     if not seleccion:
         return {"pais": pais, "noticias": [], "sin_resultados": True,
