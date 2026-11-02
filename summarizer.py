@@ -736,6 +736,7 @@ def procesar_pais(
             # página del medio (sitio caído, lento o sin fecha
             # legible). La interfaz lo señala.
             "fecha_verificada": noticia.get("_fecha_verificada", False),
+            "motivo_sin_verificar": noticia.get("_motivo_sin_verificar", ""),
             "link": noticia.get("link", ""),
             "resumen": resultado["resumen"],
             "nota": noticia.get("nota"),

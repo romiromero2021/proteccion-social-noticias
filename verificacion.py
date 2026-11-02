@@ -150,29 +150,39 @@ _ANTES_DE_LA_FECHA = re.compile(
 
 
 def _parsear_iso(texto: str) -> Optional[datetime]:
-    """Interpreta una fecha ISO-8601 y la devuelve en UTC."""
+    """
+    Interpreta una fecha ISO-8601 CONSERVANDO su huso horario.
+
+    Es importante no convertirla a UTC. Un medio cubano que publica a
+    las 20:00 del 31 de octubre escribe "2026-10-31T20:00:00-04:00";
+    pasado a UTC eso son las 00:00 del 1 de noviembre, y el reporte
+    acababa diciendo "1 nov 2026" mientras el artículo decía 31 de
+    octubre. La fecha que debe ver quien lee el boletín es la que
+    publicó el medio, en su hora, no la nuestra.
+
+    Para comparar antigüedades da igual: Python compara bien dos
+    fechas con huso, cada una con el suyo.
+    """
     match = _ISO.search(texto or "")
     if not match:
         return None
     anio, mes, dia, h, m, s, tz = match.groups()
-    try:
-        fecha = datetime(
-            int(anio), int(mes), int(dia),
-            int(h or 0), int(m or 0), int(s or 0), tzinfo=timezone.utc,
-        )
-    except ValueError:
-        return None
 
-    # Desplazamiento horario explícito: se lleva todo a UTC.
+    huso = timezone.utc
     if tz and tz not in ("Z", "z"):
         signo = 1 if tz[0] == "+" else -1
         tz_limpio = tz[1:].replace(":", "")
         try:
             horas, minutos = int(tz_limpio[:2]), int(tz_limpio[2:4] or 0)
+            huso = timezone(signo * timedelta(hours=horas, minutes=minutos))
         except ValueError:
-            return fecha
-        fecha -= signo * timedelta(hours=horas, minutes=minutos)
-    return fecha
+            huso = timezone.utc
+
+    try:
+        return datetime(int(anio), int(mes), int(dia),
+                        int(h or 0), int(m or 0), int(s or 0), tzinfo=huso)
+    except ValueError:
+        return None
 
 
 def fecha_publicada_en_html(html: str) -> Optional[datetime]:
@@ -272,30 +282,36 @@ def _valores_de_fecha(datos) -> List[str]:
 # UNA PETICIÓN POR NOTICIA: resuelve el redirector Y lee la fecha
 # ---------------------------------------------------------------------------
 
-def _consultar_pagina(link: str) -> Tuple[Optional[str], Optional[datetime]]:
+def _consultar_pagina(link: str) -> Tuple[Optional[str], Optional[datetime], str]:
     """
-    Pide la página y devuelve (url_final, fecha_publicada).
-    Cualquier fallo devuelve (None, None): el llamador deja la noticia
-    como estaba.
+    Pide la página y devuelve (url_final, fecha_publicada, motivo).
+
+    `motivo` explica por qué NO se pudo verificar, para que el fallo
+    quede dicho en vez de pasar en silencio:
+      ""                  -> se verificó
+      "no respondió"      -> red, tiempo agotado o error del servidor
+      "sin fecha legible" -> la página respondió pero no declara fecha
+
+    Antes esta función leía el cuerpo con `stream=True` y
+    `raw.read()`. Eso obliga a adivinar la codificación y puede
+    devolver bytes todavía comprimidos, lo que convierte la página en
+    ruido y hace imposible encontrar la fecha. Ahora se usa
+    `respuesta.text`, que aplica la codificación declarada por el
+    servidor y descomprime solo.
     """
     try:
         respuesta = requests.get(
             link, timeout=TIEMPO_MAXIMO_SEGUNDOS, allow_redirects=True,
-            headers=_ENCABEZADOS, stream=True,
+            headers=_ENCABEZADOS,
         )
         respuesta.raise_for_status()
         url_final = respuesta.url
-        contenido = respuesta.raw.read(BYTES_MAXIMOS, decode_content=True)
-        html = contenido.decode(respuesta.encoding or "utf-8", errors="replace")
+        html = respuesta.text[:BYTES_MAXIMOS]
     except Exception:
-        return None, None
-    finally:
-        try:
-            respuesta.close()
-        except Exception:
-            pass
+        return None, None, "no respondió"
 
-    return url_final, fecha_publicada_en_html(html)
+    fecha = fecha_publicada_en_html(html)
+    return url_final, fecha, "" if fecha else "sin fecha legible"
 
 
 def verificar_noticias(
@@ -330,7 +346,7 @@ def verificar_noticias(
         days=dias_maximos + DIAS_DE_TOLERANCIA)
 
     publicables, rechazadas = [], []
-    for noticia, (url_final, fecha_real) in zip(noticias, resultados):
+    for noticia, (url_final, fecha_real, motivo) in zip(noticias, resultados):
         verificada = dict(noticia)
 
         if url_final and not es_enlace_redirector(url_final):
@@ -346,6 +362,7 @@ def verificar_noticias(
             # comprobar" no son lo mismo y el reporte no debe
             # presentarlas igual.
             verificada["_fecha_verificada"] = False
+            verificada["_motivo_sin_verificar"] = motivo
             publicables.append(verificada)
             continue
 

@@ -466,7 +466,9 @@ if st.session_state.reportes:
                     # Una fecha sin contrastar y una contrastada no son
                     # lo mismo, y el reporte no debe mostrarlas igual.
                     if not noticia.get("fecha_verificada", False):
-                        _pie += "  ·  fecha sin verificar"
+                        _motivo = noticia.get("motivo_sin_verificar", "")
+                        _pie += ("  ·  fecha sin verificar"
+                                 + (f" ({_motivo})" if _motivo else ""))
                     st.caption(_pie)
                     st.write(noticia["resumen"])
                     if noticia.get("nota") is not None:
