@@ -732,6 +732,10 @@ def procesar_pais(
             "titulo": noticia["titulo"],
             "fuente": noticia.get("fuente", "Fuente desconocida"),
             "fecha": noticia.get("fecha", ""),
+            # False cuando no se pudo contrastar la fecha con la
+            # página del medio (sitio caído, lento o sin fecha
+            # legible). La interfaz lo señala.
+            "fecha_verificada": noticia.get("_fecha_verificada", False),
             "link": noticia.get("link", ""),
             "resumen": resultado["resumen"],
             "nota": noticia.get("nota"),

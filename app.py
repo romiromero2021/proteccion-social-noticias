@@ -461,7 +461,13 @@ if st.session_state.reportes:
             else:
                 for i, noticia in enumerate(reporte["noticias"], start=1):
                     st.markdown(f"**{i}. {noticia['titulo']}**")
-                    st.caption(t("fuente_fecha", idioma, fuente=noticia["fuente"], fecha=noticia["fecha"]))
+                    _pie = t("fuente_fecha", idioma, fuente=noticia["fuente"],
+                             fecha=noticia["fecha"])
+                    # Una fecha sin contrastar y una contrastada no son
+                    # lo mismo, y el reporte no debe mostrarlas igual.
+                    if not noticia.get("fecha_verificada", False):
+                        _pie += "  ·  fecha sin verificar"
+                    st.caption(_pie)
                     st.write(noticia["resumen"])
                     if noticia.get("nota") is not None:
                         st.caption(t("relevancia", idioma, nota=noticia["nota"], razon=noticia.get("razon", "")))

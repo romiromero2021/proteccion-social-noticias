@@ -49,6 +49,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
@@ -83,6 +84,10 @@ _MESES_ES = {
     "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5,
     "junio": 6, "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9,
     "octubre": 10, "noviembre": 11, "diciembre": 12,
+    # Francés, por Haití.
+    "janvier": 1, "fevrier": 2, "mars": 3, "avril": 4, "mai": 5,
+    "juin": 6, "juillet": 7, "aout": 8, "septembre": 9, "octobre": 10,
+    "novembre": 11, "decembre": 12,
 }
 
 
@@ -118,8 +123,30 @@ _ISO = re.compile(
     r"\s*(Z|[+-]\d{2}:?\d{2})?"
 )
 
+# Fechas escritas en el cuerpo de la página. Hacen falta varias formas
+# porque los gestores de contenido viejos no publican metadatos.
+#
+# CASO CONFIRMADO (1-nov-2026): vanguardia.cu —la nota de julio que
+# salía como "hace 13 horas"— corre sobre un gestor cuyas URLs tienen
+# la forma /de-cuba/37891-titulo, típica de Joomla, que suele escribir
+# "Publicado: Viernes, 17 Julio 2026 10:30", SIN la preposición "de".
+# La primera versión de este patrón exigía "17 de julio de 2026" y por
+# eso no reconocía nada en esa página.
 _FECHA_EN_LETRA_ES = re.compile(
-    r"(\d{1,2})\s+de\s+([a-záéíóú]+)\s+de\s+(\d{4})", re.IGNORECASE)
+    r"(\d{1,2})\s+(?:de\s+)?([a-záéíóú]{4,10})\.?\s+(?:de\s+|del\s+)?(\d{4})",
+    re.IGNORECASE)
+
+# "17/07/2026" y "17-07-2026" — día primero, que es como escribe la
+# prensa en español. Se exige un año de cuatro cifras para no casar
+# con cualquier número suelto.
+_FECHA_NUMERICA_ES = re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b")
+
+# Palabras que suelen preceder a la fecha de publicación. Sirven para
+# NO quedarse con la primera fecha que aparezca en la página (que
+# podría ser la de otra noticia de la barra lateral).
+_ANTES_DE_LA_FECHA = re.compile(
+    r"(publicad[oa]|publicado el|fecha de publicaci[oó]n|actualizad[oa]\s+el"
+    r"|escrito por|publi[ée]\s+le|published)", re.IGNORECASE)
 
 
 def _parsear_iso(texto: str) -> Optional[datetime]:
@@ -177,18 +204,53 @@ def fecha_publicada_en_html(html: str) -> Optional[datetime]:
             if fecha is not None:
                 return fecha
 
-    # Fechas escritas en letra, "17 de julio de 2026", en el cuerpo.
-    match = _FECHA_EN_LETRA_ES.search(html[:BYTES_MAXIMOS])
+    # Sin metadatos: la fecha escrita en el cuerpo. Se busca primero
+    # cerca de una palabra como "Publicado", y solo si no aparece ahí
+    # se mira la página entera — así se evita quedarse con la fecha de
+    # otra noticia de la barra lateral.
+    cuerpo = html[:BYTES_MAXIMOS]
+    marca = _ANTES_DE_LA_FECHA.search(cuerpo)
+    if marca:
+        cercano = cuerpo[marca.start():marca.start() + 200]
+        fecha = _fecha_en_texto(cercano)
+        if fecha is not None:
+            return fecha
+    return _fecha_en_texto(cuerpo)
+
+
+def _fecha_en_texto(texto: str) -> Optional[datetime]:
+    """
+    Fecha escrita en lenguaje corriente: "17 de julio de 2026",
+    "Viernes, 17 Julio 2026 10:30", "17/07/2026".
+
+    Devuelve el final del día: el dato no trae hora fiable y la duda
+    debe jugar a favor de conservar la noticia.
+    """
+    match = _FECHA_EN_LETRA_ES.search(texto)
     if match:
         dia, mes_txt, anio = match.groups()
-        mes = _MESES_ES.get(mes_txt.lower())
+        mes = _MESES_ES.get(_sin_tildes(mes_txt.lower()))
         if mes:
             try:
                 return datetime(int(anio), mes, int(dia),
                                 23, 59, tzinfo=timezone.utc)
             except ValueError:
+                pass
+
+    match = _FECHA_NUMERICA_ES.search(texto)
+    if match:
+        dia, mes, anio = (int(x) for x in match.groups())
+        if 1 <= mes <= 12 and 1 <= dia <= 31:
+            try:
+                return datetime(anio, mes, dia, 23, 59, tzinfo=timezone.utc)
+            except ValueError:
                 return None
     return None
+
+
+def _sin_tildes(texto: str) -> str:
+    descompuesto = unicodedata.normalize("NFD", texto)
+    return "".join(c for c in descompuesto if unicodedata.category(c) != "Mn")
 
 
 def _valores_de_fecha(datos) -> List[str]:
@@ -253,6 +315,7 @@ def verificar_noticias(
       "fecha"        — la fecha real en formato "17 jul 2026", si se leyó
       "_fecha_real"  — la misma fecha en ISO, para pruebas y registro
       "_fecha_buscador" — lo que decía el buscador, para poder comparar
+      "_fecha_verificada" — True si se pudo contrastar con la página
     """
     if activa is None:
         activa = VERIFICACION_ACTIVA
@@ -276,6 +339,13 @@ def verificar_noticias(
             verificada["link"] = url_final
 
         if fecha_real is None:
+            # No se pudo confirmar: ni la página responde ni declara
+            # su fecha de forma legible. La noticia se publica igual
+            # —fallar aquí no puede costar noticias— pero queda
+            # MARCADA, porque "verificada y correcta" y "no se pudo
+            # comprobar" no son lo mismo y el reporte no debe
+            # presentarlas igual.
+            verificada["_fecha_verificada"] = False
             publicables.append(verificada)
             continue
 
@@ -300,6 +370,7 @@ def verificar_noticias(
         # Dentro de rango: se corrige la fecha que verá quien lea el
         # reporte, que hasta ahora era la del buscador.
         verificada["fecha"] = _en_letra(fecha_real)
+        verificada["_fecha_verificada"] = True
         publicables.append(verificada)
 
     return publicables, rechazadas
