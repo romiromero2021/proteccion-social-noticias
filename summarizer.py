@@ -702,7 +702,8 @@ def procesar_pais(
         # propósito.
         limite_dias = 14 if "ventana_ampliada_a_2_semanas" in ramas \
             else DIAS_MAXIMOS_ANTIGUEDAD
-        seleccion, fuera_de_fecha = verificar_noticias(seleccion, limite_dias)
+        seleccion, fuera_de_fecha = verificar_noticias(
+            seleccion, limite_dias, pais=pais)
         descartadas = descartadas + fuera_de_fecha
 
     if not seleccion:
@@ -779,6 +780,7 @@ def procesar_todos_los_paises(
 COLOR_TITULO = RGBColor(0x1F, 0x3A, 0x5F)   # azul oscuro institucional
 COLOR_PAIS = RGBColor(0x2E, 0x75, 0xB6)     # azul medio
 COLOR_GRIS = RGBColor(0x59, 0x59, 0x59)     # gris para metadatos
+COLOR_AVISO = RGBColor(0xA8, 0x42, 0x2B)    # terracota para advertencias
 
 
 def _configurar_estilos(doc: Document):
@@ -869,6 +871,21 @@ def _agregar_pais(doc: Document, datos_pais: Dict):
         meta_run.font.size = Pt(9)
         meta_run.font.italic = True
         meta_run.font.color.rgb = COLOR_GRIS
+
+        # El aviso de fecha sin contrastar va DENTRO del documento, no
+        # solo en la pantalla. El Word es el archivo que circula por
+        # correo, y quien lo recibe no ve la aplicación: si el aviso
+        # vive solo en la interfaz, para el lector del boletín no
+        # existe. Vale para este aviso y para cualquier otro.
+        if not noticia.get("fecha_verificada", False):
+            motivo = noticia.get("motivo_sin_verificar", "")
+            aviso_run = meta.add_run(
+                "  ·  fecha sin verificar contra el medio"
+                + (f" ({motivo})" if motivo else "")
+            )
+            aviso_run.font.size = Pt(9)
+            aviso_run.font.italic = True
+            aviso_run.font.color.rgb = COLOR_AVISO
 
         resumen = doc.add_paragraph()
         resumen.add_run(noticia["resumen"]).font.size = Pt(11)

@@ -56,7 +56,44 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None
+
 from scraper import es_enlace_redirector
+
+# Huso horario de cada país, para escribir la fecha como la ve quien
+# lee el periódico allí.
+#
+# CASO CONFIRMADO (1-nov-2026): Diario de Cuba publicó una nota el
+# 31-oct por la noche, hora de La Habana. Su metadato viene en hora
+# universal, donde eso ya es 1 de noviembre, y el reporte decía
+# "1 nov 2026" mientras el artículo decía 31 de octubre. La fecha que
+# importa es la del medio, en su hora.
+_HUSOS_PAIS = {
+    "Costa Rica": "America/Costa_Rica",
+    "Cuba": "America/Havana",
+    "El Salvador": "America/El_Salvador",
+    "Guatemala": "America/Guatemala",
+    "Haití": "America/Port-au-Prince",
+    "Honduras": "America/Tegucigalpa",
+    "México": "America/Mexico_City",
+    "Nicaragua": "America/Managua",
+    "Panamá": "America/Panama",
+    "República Dominicana": "America/Santo_Domingo",
+}
+
+
+def _huso_de(pais: Optional[str]):
+    """Huso horario del país, o None si no se conoce."""
+    nombre = _HUSOS_PAIS.get(pais or "")
+    if not nombre or ZoneInfo is None:
+        return None
+    try:
+        return ZoneInfo(nombre)
+    except Exception:
+        return None
 
 # Se puede apagar sin tocar el código (PS_VERIFICAR_FECHAS=0).
 VERIFICACION_ACTIVA = os.environ.get("PS_VERIFICAR_FECHAS", "1") != "0"
@@ -318,6 +355,7 @@ def verificar_noticias(
     noticias: List[Dict],
     dias_maximos: int,
     activa: Optional[bool] = None,
+    pais: Optional[str] = None,
 ) -> Tuple[List[Dict], List[Dict]]:
     """
     Verifica las noticias seleccionadas contra la página del medio.
@@ -337,6 +375,8 @@ def verificar_noticias(
         activa = VERIFICACION_ACTIVA
     if not activa or not noticias:
         return list(noticias), []
+
+    huso = _huso_de(pais)
 
     with ThreadPoolExecutor(max_workers=TRABAJADORES) as pool:
         resultados = list(pool.map(
@@ -367,7 +407,9 @@ def verificar_noticias(
             continue
 
         verificada["_fecha_buscador"] = noticia.get("fecha", "")
-        verificada["_fecha_real"] = fecha_real.date().isoformat()
+        verificada["_fecha_real"] = (
+            fecha_real.astimezone(huso) if huso else fecha_real
+        ).date().isoformat()
 
         if fecha_real < limite:
             dias = (datetime.now(timezone.utc) - fecha_real).days
@@ -378,7 +420,7 @@ def verificar_noticias(
                 "nota": verificada.get("nota"),
                 "razon": (
                     f"fecha real fuera de rango: el medio la publicó el "
-                    f"{_en_letra(fecha_real)} (hace {dias} días) y el "
+                    f"{_en_letra(fecha_real, huso)} (hace {dias} días) y el "
                     f"buscador la daba como «{noticia.get('fecha', '')}»"
                 ),
             })
@@ -386,7 +428,7 @@ def verificar_noticias(
 
         # Dentro de rango: se corrige la fecha que verá quien lea el
         # reporte, que hasta ahora era la del buscador.
-        verificada["fecha"] = _en_letra(fecha_real)
+        verificada["fecha"] = _en_letra(fecha_real, huso)
         verificada["_fecha_verificada"] = True
         publicables.append(verificada)
 
@@ -397,6 +439,11 @@ _MESES_CORTOS = ("ene", "feb", "mar", "abr", "may", "jun",
                  "jul", "ago", "sep", "oct", "nov", "dic")
 
 
-def _en_letra(fecha: datetime) -> str:
-    """'17 jul 2026' — fecha absoluta, legible y sin ambigüedad."""
+def _en_letra(fecha: datetime, huso=None) -> str:
+    """
+    '17 jul 2026' — fecha absoluta, legible y sin ambigüedad, escrita
+    en la hora del país del reporte cuando se conoce.
+    """
+    if huso is not None:
+        fecha = fecha.astimezone(huso)
     return f"{fecha.day} {_MESES_CORTOS[fecha.month - 1]} {fecha.year}"
