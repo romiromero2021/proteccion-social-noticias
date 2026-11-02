@@ -98,7 +98,10 @@ def _huso_de(pais: Optional[str]):
 # Se puede apagar sin tocar el código (PS_VERIFICAR_FECHAS=0).
 VERIFICACION_ACTIVA = os.environ.get("PS_VERIFICAR_FECHAS", "1") != "0"
 
-TIEMPO_MAXIMO_SEGUNDOS = 8
+TIEMPO_MAXIMO_SEGUNDOS = 12
+# Un reintento absorbe los sitios lentos sin alargar mucho la corrida:
+# las peticiones van en paralelo.
+REINTENTOS = 2
 TRABAJADORES = 8
 # Tamaño máximo de HTML que se lee: las etiquetas de fecha viven en la
 # cabecera, así que no hace falta descargar el artículo entero.
@@ -115,6 +118,7 @@ _ENCABEZADOS = {
         "+monitoreo de prensa institucional)"
     ),
     "Accept": "text/html,application/xhtml+xml",
+    "Accept-Language": "es,fr;q=0.8,en;q=0.6",
 }
 
 _MESES_ES = {
@@ -251,18 +255,34 @@ def fecha_publicada_en_html(html: str) -> Optional[datetime]:
             if fecha is not None:
                 return fecha
 
-    # Sin metadatos: la fecha escrita en el cuerpo. Se busca primero
-    # cerca de una palabra como "Publicado", y solo si no aparece ahí
-    # se mira la página entera — así se evita quedarse con la fecha de
-    # otra noticia de la barra lateral.
+    # Sin metadatos: la fecha escrita en el cuerpo, PERO solo si
+    # aparece pegada a una palabra que la presente como fecha de
+    # publicación ("Publicado el…", "Fecha de publicación…").
+    #
+    # AVERÍA CONFIRMADA (1-nov-2026, Nicaragua). Antes, si no había
+    # ninguna de esas palabras, se recorría la página entera y se
+    # tomaba la primera fecha que apareciera. En una nota de Radio ABC
+    # Stereo titulada "Declaran asueto a cuenta de vacaciones el 2 de
+    # noviembre" eso dio "2 nov 2026" como fecha de publicación: era
+    # la fecha de la que HABLA la noticia, no la de su publicación. El
+    # artículo es del 27 de octubre.
+    #
+    # Ese fallo se vio porque la fecha caía en el futuro. El caso
+    # peligroso es el contrario: una noticia que mencione "el 20 de
+    # septiembre" habría recibido en silencio una fecha vieja y la
+    # habrían descartado por antigua. Una noticia buena perdida, por
+    # una fecha inventada a partir de su propio texto.
+    #
+    # Por eso ya no hay búsqueda a página completa. Si el medio no
+    # dice claramente cuándo publicó, la respuesta correcta es "no se
+    # pudo verificar", no una conjetura con aspecto de dato.
     cuerpo = html[:BYTES_MAXIMOS]
-    marca = _ANTES_DE_LA_FECHA.search(cuerpo)
-    if marca:
+    for marca in _ANTES_DE_LA_FECHA.finditer(cuerpo):
         cercano = cuerpo[marca.start():marca.start() + 200]
         fecha = _fecha_en_texto(cercano)
         if fecha is not None:
             return fecha
-    return _fecha_en_texto(cuerpo)
+    return None
 
 
 def _fecha_en_texto(texto: str) -> Optional[datetime]:
@@ -336,15 +356,20 @@ def _consultar_pagina(link: str) -> Tuple[Optional[str], Optional[datetime], str
     `respuesta.text`, que aplica la codificación declarada por el
     servidor y descomprime solo.
     """
-    try:
-        respuesta = requests.get(
-            link, timeout=TIEMPO_MAXIMO_SEGUNDOS, allow_redirects=True,
-            headers=_ENCABEZADOS,
-        )
-        respuesta.raise_for_status()
-        url_final = respuesta.url
-        html = respuesta.text[:BYTES_MAXIMOS]
-    except Exception:
+    url_final = html = None
+    for intento in range(REINTENTOS):
+        try:
+            respuesta = requests.get(
+                link, timeout=TIEMPO_MAXIMO_SEGUNDOS, allow_redirects=True,
+                headers=_ENCABEZADOS,
+            )
+            respuesta.raise_for_status()
+            url_final = respuesta.url
+            html = respuesta.text[:BYTES_MAXIMOS]
+            break
+        except Exception:
+            continue
+    if html is None:
         return None, None, "no respondió"
 
     fecha = fecha_publicada_en_html(html)
@@ -393,6 +418,20 @@ def verificar_noticias(
             if url_final != verificada.get("link"):
                 verificada["_link_redirector"] = verificada.get("link", "")
             verificada["link"] = url_final
+
+        # Una fecha de publicación POSTERIOR a hoy es imposible, y sin
+        # embargo llega: el 1-nov-2026 una nota de Radio ABC Stereo
+        # (Nicaragua) se verificó como "2 nov 2026". O el medio estampa
+        # mal la hora, o lo que se leyó no era la fecha de publicación
+        # sino otra cosa de la página. En cualquiera de los dos casos el
+        # dato no sirve, y escribirlo sería cambiar una fecha dudosa por
+        # otra con aire de comprobada.
+        if fecha_real is not None and \
+                fecha_real > datetime.now(timezone.utc) + timedelta(days=1):
+            verificada["_fecha_verificada"] = False
+            verificada["_motivo_sin_verificar"] = "la página declara una fecha futura"
+            publicables.append(verificada)
+            continue
 
         if fecha_real is None:
             # No se pudo confirmar: ni la página responde ni declara
