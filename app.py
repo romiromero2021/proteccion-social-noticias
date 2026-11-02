@@ -24,7 +24,9 @@ import streamlit as st
 import unicodedata
 from datetime import datetime
 from cache import _ahora
-from datos_paises import ficha
+from datos_paises import ficha, nombre_pais
+from idiomas import (IDIOMAS, IDIOMA_POR_DEFECTO, t, datos_de_espera,
+                     etiqueta_etapa)
 
 from scraper import buscar_noticias_pais, PAISES, TERMINOS_TEMATICOS
 from summarizer import (procesar_pais, generar_documento_word, modelo_en_uso,
@@ -50,7 +52,10 @@ def _normalizar_nombre_archivo(texto: str) -> str:
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Noticias: Protección Social en México, Centroamérica y el Caribe",
+    # El título de la pestaña se fija antes de poder leer el idioma
+    # elegido (set_page_config tiene que ser la primera llamada de
+    # Streamlit), así que va bilingüe de una vez.
+    page_title="Protección Social / Social Protection — México, Centroamérica y el Caribe",
     page_icon="📰",
     layout="wide",
 )
@@ -66,18 +71,28 @@ if "reportes" not in st.session_state:
     # dict {pais: reporte} — se va llenando a medida que se procesan países
     st.session_state.reportes = {}
 
-st.title("📰 Resumen Diario de Noticias")
-st.subheader("Programas de Protección Social en México, Centroamérica y el Caribe")
+if "idioma" not in st.session_state:
+    st.session_state.idioma = IDIOMA_POR_DEFECTO
 
-st.markdown(
-    "Esta aplicación combina dos agentes automatizados:\n"
-    "1. **Agente recolector** — busca noticias recientes (última semana) vía SerpAPI.\n"
-    "2. **Agente sintetizador** — selecciona las noticias más relevantes por país, "
-    "las resume con Groq y genera un documento Word descargable.\n\n"
-    "🗄️ Los resultados de cada país se **cachean por el día** — si tú u otro "
-    "usuario ya consultaron un país hoy, no se vuelve a gastar cuota de "
-    "SerpAPI/Groq para ese país a menos que pidas regenerarlo explícitamente."
-)
+# El selector va arriba del todo y fuera del panel lateral: en un taller
+# tiene que verse sin abrir nada.
+_col_titulo, _col_idioma = st.columns([4, 1])
+with _col_idioma:
+    idioma = st.radio(
+        t("idioma_selector", st.session_state.idioma),
+        options=list(IDIOMAS),
+        format_func=lambda c: IDIOMAS[c],
+        horizontal=True,
+        key="idioma",
+    )
+
+with _col_titulo:
+    st.title(t("titulo", idioma))
+    st.subheader(t("subtitulo", idioma))
+
+st.markdown(t("introduccion", idioma))
+if t("nota_idioma_contenido", idioma):
+    st.caption(t("nota_idioma_contenido", idioma))
 
 # ---------------------------------------------------------------------------
 # CARGA DE API KEYS
@@ -105,7 +120,7 @@ def obtener_api_key(nombre_secret: str, label: str) -> str:
 
 
 with st.sidebar:
-    st.header("⚙️ Configuración")
+    st.header(t("configuracion", idioma))
     serpapi_key = obtener_api_key("SERPAPI_KEY", "SerpAPI Key")
     groq_key = obtener_api_key("GROQ_API_KEY", "Groq API Key")
 
@@ -120,39 +135,49 @@ with st.sidebar:
         _base_url_groq = ""
     configurar_base_url(_base_url_groq)
     if _base_url_groq:
-        st.caption("🔀 Groq se está consultando a través de una pasarela alternativa.")
+        st.caption(t("pasarela_groq", idioma))
 
     st.divider()
-    n_noticias = st.slider("Noticias por país", min_value=1, max_value=5, value=5)
+    n_noticias = st.slider(t("noticias_por_pais", idioma), min_value=1, max_value=5, value=5)
 
     st.divider()
-    if st.button("🗑️ Borrar caché de hoy", use_container_width=True):
+    if st.button(t("borrar_cache", idioma), use_container_width=True):
         cantidad = cache.borrar_cache_de_hoy()
         st.session_state.reportes = {}  # también limpiar lo que se ve en pantalla
-        st.success(f"Caché de hoy borrado ({cantidad} país(es)). Vuelve a buscar para regenerar todo.")
-    st.caption(
-        "Usa esto si acabas de actualizar el código de la app y quieres "
-        "que la próxima búsqueda ignore resultados guardados con la "
-        "lógica anterior (ej. cambios en cantidad de noticias o modelo)."
-    )
+        st.success(t("cache_borrado", idioma, cantidad=cantidad))
+    st.caption(t("ayuda_cache", idioma))
 
     st.divider()
-    st.caption(f"Países cubiertos ({len(PAISES)}):")
-    st.caption(", ".join(PAISES))
-    st.caption(f"Términos de búsqueda: *{', '.join(TERMINOS_TEMATICOS)}*")
-    st.caption(f"Modelo de IA en uso: `{modelo_en_uso()}`")
+    st.caption(t("paises_cubiertos", idioma, n=len(PAISES)))
+    st.caption(", ".join(nombre_pais(p, idioma) for p in PAISES))
+    st.caption(t("terminos_busqueda", idioma, terminos=", ".join(TERMINOS_TEMATICOS)))
+    st.caption(t("modelo_en_uso", idioma, modelo=modelo_en_uso()))
 
 claves_listas = bool(serpapi_key) and bool(groq_key)
 
 if not claves_listas:
-    st.warning(
-        "⚠️ Ingresa tu **SerpAPI Key** y tu **Groq API Key** en el panel "
-        "lateral izquierdo para poder generar el reporte."
-    )
+    st.warning(t("faltan_claves", idioma))
 
 # ---------------------------------------------------------------------------
 # LÓGICA COMPARTIDA: procesar un solo país (con o sin forzar regeneración)
 # ---------------------------------------------------------------------------
+
+# Nombre legible de cada rama automática, para el rastro que se
+# muestra en la pestaña del país.
+_ETIQUETA_RAMA = {
+    "busqueda_abierta_sin_lista_de_medios":
+        "la lista de medios no bastó: se buscó también en abierto",
+    "ventana_ampliada_a_2_semanas":
+        "una consulta volvió vacía: se amplió la ventana a dos semanas",
+    "reintento_con_consulta_corta":
+        "el buscador se colgó: se reintentó con una consulta más corta",
+    "editor_sin_respuesta_publicado_sin_revisar":
+        "⚠ el editor no respondió: se publicó SIN revisión del modelo",
+    "el_buscador_dijo_sin_resultados":
+        "⚠ el buscador contestó «sin resultados» a alguna consulta: "
+        "puede ser que no hubiera noticias, o que el proveedor fallara",
+}
+
 
 def procesar_un_pais(pais: str, forzar: bool = False, progress_callback=None) -> dict:
     """
@@ -201,53 +226,15 @@ def procesar_un_pais(pais: str, forzar: bool = False, progress_callback=None) ->
 col1, col2 = st.columns([1, 3])
 with col1:
     ejecutar_todos = st.button(
-        "🚀 Buscar noticias de hoy (todos los países)",
+        t("boton_buscar", idioma),
         type="primary",
         disabled=not claves_listas,
         use_container_width=True,
     )
 
-# Datos que se muestran, rotando, durante la espera. No son adorno:
-# explican lo que el sistema está haciendo justo en ese momento, así
-# que el rato de espera sirve para entender la herramienta. Cada uno
-# corresponde a una decisión de diseño real del proyecto.
-DATOS_MIENTRAS_ESPERAS = [
-    "Cada país se busca en una lista curada de medios reales, investigada uno por uno. "
-    "Un medio que no está en la lista de su país no puede aparecer en su sección.",
-
-    "Haití se busca en francés. Su prensa publica en ese idioma, y buscarlo en español "
-    "dejaba fuera a Le Nouvelliste, AlterPresse y los demás medios haitianos.",
-
-    "Los resúmenes se redactan solo con el titular y el extracto reales de cada noticia. "
-    "El modelo no consulta su memoria ni busca por su cuenta, así que no puede inventar.",
-
-    "La espera entre resúmenes es deliberada. El servicio de IA permite 8.000 tokens por "
-    "minuto: espaciar las llamadas 3,5 segundos evita chocar contra el límite y fallar.",
-
-    "Lo que no pasa un filtro no se tira: queda apartado. Solo si a un país le faltan "
-    "noticias se revisan esas dudosas, una por una, con más criterio.",
-
-    "Si un país no tuvo cobertura esta semana, el reporte lo va a decir. Nunca rellena "
-    "el hueco con algo que no venga al caso.",
-
-    "Si una noticia aparece en dos búsquedas distintas con enlaces distintos, se "
-    "detecta que es la misma por el parecido entre los titulares y solo se incluye una vez.",
-
-    "Google fecha por rastreo las páginas que no llevan fecha propia, y así reporta "
-    "material viejo como reciente. Por eso también se lee la fecha incrustada en el enlace.",
-
-    "Cada noticia llega con su fuente, su fecha y su enlace. Todo lo que dice el resumen "
-    "se puede comprobar en la nota original con un clic.",
-
-    "El nombre de un país dentro del nombre de otro lugar no cuenta. 'Villa El Salvador' "
-    "es un distrito de Lima, y el sistema ya lo sabe.",
-]
-
-ETIQUETA_ETAPA = {
-    "buscando": "Buscando en la prensa",
-    "puntuando": "Valorando la relevancia de las candidatas",
-    "resumiendo": "Redactando resúmenes",
-}
+# Los textos que rotan durante la espera y los nombres de las etapas
+# viven ahora en idiomas.py, con sus dos versiones.
+DATOS_MIENTRAS_ESPERAS = datos_de_espera(idioma)
 
 
 def _mmss(segundos: float) -> str:
@@ -261,7 +248,7 @@ if ejecutar_todos:
     total = len(PAISES)
     inicio = _time.monotonic()
 
-    barra = st.progress(0.0, text="Iniciando…")
+    barra = st.progress(0.0, text=t("iniciando", idioma))
     linea_estado = st.empty()
     # Ficha del país que se está procesando en ese momento. La espera
     # ronda los veinte minutos, así que en vez de una barra muda se
@@ -312,23 +299,23 @@ if ejecutar_todos:
             return
         estado["pais_en_ficha"] = pais_actual
         area_ficha.empty()
-        datos = ficha(pais_actual)
+        datos = ficha(pais_actual, idioma)
         if not datos:
             return
         with area_ficha.container(border=True):
-            st.markdown(f"### {pais_actual}")
+            st.markdown(f"### {nombre_pais(pais_actual, idioma)}")
             col_a, col_b = st.columns(2)
             with col_a:
-                st.markdown(f"**Capital**  \n{datos['capital']}")
-                st.markdown(f"**Idioma**  \n{datos['idioma']}")
+                st.markdown(f"**{t('ficha_capital', idioma)}**  \n{datos['capital']}")
+                st.markdown(f"**{t('ficha_idioma', idioma)}**  \n{datos['idioma']}")
             with col_b:
-                st.markdown(f"**Colinda con**  \n{datos['fronteras']}")
-                st.markdown(f"**Moneda**  \n{datos['moneda']}")
+                st.markdown(f"**{t('ficha_fronteras', idioma)}**  \n{datos['fronteras']}")
+                st.markdown(f"**{t('ficha_moneda', idioma)}**  \n{datos['moneda']}")
             st.markdown(
-                "**Sitios históricos y arqueológicos**\n\n"
+                f"**{t('ficha_sitios', idioma)}**\n\n"
                 + "\n".join(f"- {sitio}" for sitio in datos["sitios"])
             )
-            st.markdown(f"**Protección social**  \n{datos['institucion']}")
+            st.markdown(f"**{t('ficha_institucion', idioma)}**  \n{datos['institucion']}")
             st.info(datos["curiosidad"])
 
     def _pintar(pais_actual: str, indice_pais: int, etapa: str, hecho: int, de: int):
@@ -338,17 +325,18 @@ if ejecutar_todos:
         if fraccion > 0.02:
             restante = _mmss(transcurrido / fraccion - transcurrido)
         else:
-            restante = "calculando…"
+            restante = t("calculando", idioma)
 
-        barra.progress(fraccion, text=f"{pais_actual} · país {indice_pais}/{total}")
+        barra.progress(fraccion, text=t("progreso_pais", idioma,
+                                        pais=nombre_pais(pais_actual, idioma),
+                                        i=indice_pais, total=total))
 
-        detalle = ETIQUETA_ETAPA.get(etapa, etapa)
+        detalle = etiqueta_etapa(etapa, idioma)
         if etapa == "resumiendo" and de:
-            detalle += f" ({hecho + 1} de {de})"
-        linea_estado.markdown(
-            f"**{detalle}** · {_mmss(transcurrido)} transcurrido · "
-            f"faltan ~{restante}"
-        )
+            detalle += " " + t("resumiendo_de", idioma, hecho=hecho + 1, de=de)
+        linea_estado.markdown(t("linea_estado", idioma, detalle=detalle,
+                                transcurrido=_mmss(transcurrido),
+                                restante=restante))
 
         _pintar_ficha(pais_actual)
 
@@ -374,21 +362,22 @@ if ejecutar_todos:
 
         terminados.append((pais, reporte))
         with area_en_vivo.container():
-            st.caption("Ya puedes ir leyendo — el resto sigue cargando:")
-            for nombre_pais, rep in terminados:
-                etiqueta = "📦 caché" if rep.get("_desde_cache") else "🆕 nuevo"
+            st.caption(t("ya_puedes_leer", idioma))
+            for nombre_pais_clave, rep in terminados:
+                etiqueta = (t("etiqueta_cache", idioma) if rep.get("_desde_cache")
+                            else t("etiqueta_nuevo", idioma))
                 n = len(rep.get("noticias", []))
                 if rep.get("error_busqueda"):
-                    resumen_pais = "⚠️ error de búsqueda"
+                    resumen_pais = t("error_de_busqueda", idioma)
                 elif n == 0:
-                    resumen_pais = "sin cobertura esta semana"
+                    resumen_pais = t("sin_cobertura_semana", idioma)
                 else:
-                    resumen_pais = f"{n} noticia(s)"
+                    resumen_pais = t("n_noticias", idioma, n=n)
                 # Solo el último país queda abierto: es la novedad, y
                 # así la lista no crece hasta volverse inmanejable.
-                es_ultimo = nombre_pais == terminados[-1][0]
+                es_ultimo = nombre_pais_clave == terminados[-1][0]
                 with st.expander(
-                    f"✅ {nombre_pais} — {resumen_pais} · {etiqueta}",
+                    f"✅ {nombre_pais(nombre_pais_clave, idioma)} — {resumen_pais} · {etiqueta}",
                     expanded=es_ultimo,
                 ):
                     if rep.get("error_busqueda"):
@@ -398,18 +387,19 @@ if ejecutar_todos:
                             f"**{noticia['titulo']}**  \n"
                             f"*{noticia.get('fuente','')} · {noticia.get('fecha','')}*  \n"
                             f"{noticia.get('resumen','')}  \n"
-                            f"[Ver nota original]({noticia.get('link','')})"
+                            f"[{t('ver_nota_original', idioma)}]({noticia.get('link','')})"
                         )
                         st.markdown("---")
 
-    barra.progress(1.0, text=f"✅ Listo en {_mmss(_time.monotonic() - inicio)}")
+    barra.progress(1.0, text=t("listo_en", idioma,
+                               tiempo=_mmss(_time.monotonic() - inicio)))
     linea_estado.empty()
     area_ficha.empty()
     linea_dato.empty()
     # Se limpia la vista en vivo: justo debajo se renderizan las
     # pestañas definitivas, y dejar ambas duplicaría todo el reporte.
     area_en_vivo.empty()
-    st.success("¡Reporte actualizado! Revisa los resultados abajo.")
+    st.success(t("reporte_actualizado", idioma))
 
 # ---------------------------------------------------------------------------
 # RESULTADOS POR PAÍS — con botón individual de regeneración
@@ -417,14 +407,10 @@ if ejecutar_todos:
 
 if st.session_state.reportes:
     st.divider()
-    st.markdown("## 📄 Resultados por país")
-    st.caption(
-        "Cada país muestra si su resultado viene del caché de hoy o se "
-        "generó recién. Usa '🔄 Regenerar' para forzar una nueva búsqueda "
-        "de un país específico sin afectar a los demás."
-    )
+    st.markdown(t("resultados_por_pais", idioma))
+    st.caption(t("ayuda_resultados", idioma))
 
-    tabs = st.tabs(PAISES)
+    tabs = st.tabs([nombre_pais(p, idioma) for p in PAISES])
 
     for tab, pais in zip(tabs, PAISES):
         with tab:
@@ -433,50 +419,54 @@ if st.session_state.reportes:
             col_info, col_btn = st.columns([3, 1])
             with col_btn:
                 regenerar = st.button(
-                    "🔄 Regenerar",
+                    t("regenerar", idioma),
                     key=f"regen_{pais}",
                     disabled=not claves_listas,
                     use_container_width=True,
                 )
 
             if regenerar:
-                with st.spinner(f"Regenerando noticias de {pais}..."):
+                with st.spinner(t("regenerando", idioma, pais=nombre_pais(pais, idioma))):
                     st.session_state.reportes[pais] = procesar_un_pais(pais, forzar=True)
                 reporte = st.session_state.reportes[pais]
-                st.success(f"{pais} regenerado.")
+                st.success(t("pais_regenerado", idioma, pais=nombre_pais(pais, idioma)))
 
             if reporte is None:
                 with col_info:
-                    st.info("Aún no se ha consultado este país en esta sesión.")
+                    st.info(t("sin_consultar", idioma))
                 continue
 
             with col_info:
                 if reporte.get("_desde_cache"):
-                    st.caption(f"📦 Desde caché de hoy — última actualización: {reporte['_actualizado_en']}")
+                    st.caption(t("desde_cache", idioma, cuando=reporte["_actualizado_en"]))
                 else:
-                    st.caption(f"🆕 Recién generado — {reporte['_actualizado_en']}")
+                    st.caption(t("recien_generado", idioma, cuando=reporte["_actualizado_en"]))
+
+            # Rastro de las ramas automáticas. Un país que trae dos
+            # noticias porque esa semana hubo poco y otro que trae dos
+            # porque la consulta se amplió o se recortó se veían
+            # exactamente igual. Esto los distingue.
+            if reporte.get("ramas"):
+                st.caption("⤷ " + " · ".join(
+                    _ETIQUETA_RAMA.get(r, r) for r in reporte["ramas"]))
 
             if reporte.get("error_busqueda"):
-                st.error(f"⚠️ Error al consultar SerpAPI para este país: {reporte['error_busqueda']}")
+                st.error(t("error_serpapi", idioma, error=reporte["error_busqueda"]))
             elif reporte["sin_resultados"]:
                 n_desc = len(reporte.get("descartadas", []))
                 if n_desc:
-                    st.info(
-                        f"Se revisaron {n_desc} noticia(s) de este país, pero ninguna "
-                        "trataba de protección social con suficiente centralidad. "
-                        "Puedes ver abajo qué se descartó y por qué."
-                    )
+                    st.info(t("revisadas_ninguna_relevante", idioma, n=n_desc))
                 else:
-                    st.info("No se encontraron noticias relevantes en la última semana (ni en las últimas 2 semanas).")
+                    st.info(t("sin_resultados", idioma))
             else:
                 for i, noticia in enumerate(reporte["noticias"], start=1):
                     st.markdown(f"**{i}. {noticia['titulo']}**")
-                    st.caption(f"Fuente: {noticia['fuente']} | Fecha: {noticia['fecha']}")
+                    st.caption(t("fuente_fecha", idioma, fuente=noticia["fuente"], fecha=noticia["fecha"]))
                     st.write(noticia["resumen"])
                     if noticia.get("nota") is not None:
-                        st.caption(f"🎯 Relevancia {noticia['nota']}/3 — {noticia.get('razon','')}")
+                        st.caption(t("relevancia", idioma, nota=noticia["nota"], razon=noticia.get("razon", "")))
                     if noticia.get("link"):
-                        st.markdown(f"[Ver noticia completa]({noticia['link']})")
+                        st.markdown(f"[{t('ver_noticia_completa', idioma)}]({noticia['link']})")
                     st.markdown("---")
 
             # Qué se descartó y por qué. Es lo que hace auditable la
@@ -485,12 +475,12 @@ if st.session_state.reportes:
             # el sistema más adelante.
             if reporte.get("descartadas"):
                 with st.expander(
-                    f"🔍 {len(reporte['descartadas'])} noticia(s) revisadas y no incluidas — ver por qué"
+                    t("descartes_titulo", idioma, n=len(reporte["descartadas"]))
                 ):
                     for d in reporte["descartadas"]:
                         # nota None = el editor no la puntuó. Se muestra
                         # como tal en vez de "None/3".
-                        etiqueta = ("sin nota" if d.get("nota") is None
+                        etiqueta = (t("sin_nota", idioma) if d.get("nota") is None
                                     else f"{d['nota']}/3")
                         st.markdown(
                             f"**{etiqueta}** · {d['titulo']}  \n"
@@ -521,34 +511,11 @@ if st.session_state.reportes:
                             for e in reporte.get("errores_llm", [])
                         )
                         if hay_bloqueo_de_red:
-                            st.error(
-                                "🔴 **Groq está rechazando las peticiones por la RED, "
-                                "no por la clave.** Lo que se muestra arriba es el texto "
-                                "original de cada noticia, no un resumen.\n\n"
-                                "El error 403 *\"Access denied — check your network "
-                                "settings\"* lo devuelve el Cloudflare que Groq tiene "
-                                "delante, **antes** de comprobar la API key, porque "
-                                "bloquea las IP de centros de datos y Streamlit Cloud "
-                                "es uno. Tu clave y tu cuota están bien, y cambiar de "
-                                "modelo no ayuda.\n\n"
-                                "**Qué hacer:** primero reinicia la app (puede tocarte "
-                                "otra IP de salida). Si sigue igual, hay que enrutar por "
-                                "una pasarela añadiendo el secret `GROQ_BASE_URL` — el "
-                                "README explica cómo, y no requiere tocar el código."
-                            )
+                            st.error(t("error_bloqueo_red", idioma))
                         else:
-                            st.error(
-                                "🔴 **Ningún resumen pudo generarse con IA.** Lo que se "
-                                "muestra arriba es el texto original de cada noticia, no un "
-                                "resumen. Suele deberse a que el modelo de Groq fue retirado, "
-                                "a que la API key venció, o a que el servicio está caído. "
-                                "Revisa el detalle técnico abajo."
-                            )
+                            st.error(t("error_sin_resumenes", idioma))
 
-                    with st.expander(
-                        f"⚠️ {n_fallidos} resumen(es) usaron el "
-                        "texto original por un error de Groq — ver detalle técnico"
-                    ):
+                    with st.expander(t("detalle_tecnico", idioma, n=n_fallidos)):
                         for err in reporte["errores_llm"]:
                             st.code(err, language=None)
 
@@ -561,12 +528,8 @@ if st.session_state.reportes:
     paises_faltantes = [p for p in PAISES if p not in paises_listos]
 
     if paises_faltantes:
-        st.warning(
-            f"⚠️ Aún faltan {len(paises_faltantes)} país(es) por consultar: "
-            f"{', '.join(paises_faltantes)}. El documento se generará solo "
-            "con los países ya disponibles, o usa el botón principal para "
-            "completarlos todos."
-        )
+        st.warning(t("faltan_paises", idioma, n=len(paises_faltantes),
+                     paises=", ".join(nombre_pais(p, idioma) for p in paises_faltantes)))
 
     # Limpiar las claves internas (_desde_cache, _actualizado_en) antes de
     # pasarle los datos al generador de Word, que no las espera.
@@ -586,27 +549,30 @@ if st.session_state.reportes:
     if reportes_para_docx:
         docx_buffer = generar_documento_word(reportes_para_docx)
         st.download_button(
-            label=f"⬇️ Descargar documento Word ({len(paises_listos)}/{len(PAISES)} países)",
+            label=t("descargar_word", idioma, listos=len(paises_listos), total=len(PAISES)),
             data=docx_buffer,
             file_name=f"reporte_proteccion_social_{fecha_hoy}.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             type="primary",
         )
+        if t("nota_word_en_espanol", idioma):
+            st.caption(t("nota_word_en_espanol", idioma))
     else:
-        st.info("Aún no hay ningún país listo para descargar. Usa el botón principal para empezar.")
+        st.info(t("nada_que_descargar", idioma))
 
     # -----------------------------------------------------------------
     # DESCARGA DE UN SOLO PAÍS (documento Word con solo sus 5 noticias)
     # -----------------------------------------------------------------
     if paises_listos:
         st.divider()
-        st.markdown("### 📍 O descarga solo un país")
+        st.markdown(t("descarga_individual", idioma))
 
         col_select, col_download = st.columns([2, 1])
         with col_select:
             pais_elegido = st.selectbox(
-                "Elige un país",
+                t("elige_pais", idioma),
                 options=paises_listos,
+                format_func=lambda p: nombre_pais(p, idioma),
                 key="selector_pais_individual",
                 label_visibility="collapsed",
             )
@@ -625,7 +591,7 @@ if st.session_state.reportes:
 
         with col_download:
             st.download_button(
-                label=f"⬇️ Descargar {pais_elegido}",
+                label=t("descargar_pais", idioma, pais=nombre_pais(pais_elegido, idioma)),
                 data=docx_pais_individual,
                 file_name=nombre_archivo_pais,
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

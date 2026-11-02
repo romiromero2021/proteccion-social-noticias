@@ -14,7 +14,9 @@ import re
 import time
 from datetime import datetime
 from cache import ZONA_HORARIA
-from scraper import deduplicar_noticias, ordenar_marginales, titulos_similares
+from scraper import (deduplicar_noticias, ordenar_marginales, titulos_similares,
+                     DIAS_MAXIMOS_ANTIGUEDAD)
+from verificacion import verificar_noticias
 from typing import List, Dict
 
 import groq
@@ -607,6 +609,11 @@ def procesar_pais(
     aceptadas = deduplicar_noticias(resultado_busqueda.get("aceptadas", []))
     marginales = ordenar_marginales(resultado_busqueda.get("descartadas_marginales", []))
 
+    # Rastro de las ramas automáticas que se tomaron en la búsqueda
+    # (ver scraper._buscar_prensa_pais). Se arrastra hasta el reporte
+    # para que quede constancia de POR QUÉ un país trae lo que trae.
+    ramas = list(resultado_busqueda.get("ramas", []))
+
     vistos = {n.get("link") for n in aceptadas if n.get("link")}
     candidatas = list(aceptadas)
     for n in marginales:
@@ -620,7 +627,7 @@ def procesar_pais(
 
     if not candidatas:
         return {"pais": pais, "noticias": [], "sin_resultados": True,
-                "errores_llm": [], "descartadas": []}
+                "errores_llm": [], "descartadas": [], "ramas": ramas}
 
     if progress_callback:
         progress_callback("puntuando", 0, len(candidatas))
@@ -639,6 +646,8 @@ def procesar_pais(
             "El editor de relevancia no respondió: se publican las noticias "
             "que aprobaron los filtros automáticos, sin revisión del modelo."
         )
+        # La cuarta rama, la única que cambia SI alguien juzgó.
+        ramas.append("editor_sin_respuesta_publicado_sin_revisar")
         seleccion = [dict(n, nota=None, razon="sin revisar") for n in aceptadas[:n_noticias]]
         descartadas = []
     else:
@@ -674,9 +683,32 @@ def procesar_pais(
             for n in puntuadas if n not in seleccion
         ] + sin_puntuar
 
+    # VERIFICACIÓN CONTRA LA PÁGINA DEL MEDIO (1-nov-2026).
+    #
+    # Hasta aquí todo lo que el sistema sabe de la fecha y del enlace se
+    # lo dijo el buscador, y los reportes del 31-oct y 1-nov demostraron
+    # que puede mentir en las dos cosas: enlaces envueltos en el
+    # redirector de Google, y una nota del 17 de julio presentada como
+    # "hace 13 horas" en tres reportes seguidos, cada vez más joven.
+    #
+    # Se verifica SOLO lo que se va a publicar (cinco como mucho por
+    # país), en paralelo y con tiempo máximo corto. Ante cualquier fallo
+    # la noticia se queda como estaba: verificar no puede convertirse en
+    # una forma nueva de perder noticias.
+    if seleccion:
+        # Si la búsqueda amplió la ventana a dos semanas (rama 2), el
+        # límite legítimo de esta corrida son 14 días, no 10: verificar
+        # contra 10 descartaría noticias que el propio sistema aceptó a
+        # propósito.
+        limite_dias = 14 if "ventana_ampliada_a_2_semanas" in ramas \
+            else DIAS_MAXIMOS_ANTIGUEDAD
+        seleccion, fuera_de_fecha = verificar_noticias(seleccion, limite_dias)
+        descartadas = descartadas + fuera_de_fecha
+
     if not seleccion:
         return {"pais": pais, "noticias": [], "sin_resultados": True,
-                "errores_llm": errores_llm, "descartadas": descartadas}
+                "errores_llm": errores_llm, "descartadas": descartadas,
+                "ramas": ramas}
 
     procesadas = []
     for i, noticia in enumerate(seleccion):
@@ -707,7 +739,8 @@ def procesar_pais(
         })
 
     return {"pais": pais, "noticias": procesadas, "sin_resultados": False,
-            "errores_llm": errores_llm, "descartadas": descartadas}
+            "errores_llm": errores_llm, "descartadas": descartadas,
+            "ramas": ramas}
 
 
 def procesar_todos_los_paises(

@@ -61,7 +61,7 @@ import requests
 from datetime import datetime, timedelta, timezone
 
 from typing import List, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 SERPAPI_ENDPOINT = "https://serpapi.com/search"
 
@@ -824,11 +824,24 @@ def _parsear_fecha_serpapi(item: Dict) -> Optional[datetime]:
         except ValueError:
             return None
 
-    # Caso 3: fechas relativas tipo "hace 3 horas" / "3 hours ago" —
-    # se interpretan como "ahora mismo" (siempre pasan el filtro de
-    # antigüedad, ya que son por definición recientes).
-    if re.search(r"hace|ago|hour|minute|hora|minuto", publicado, re.IGNORECASE):
-        return datetime.now(timezone.utc)
+    # Caso 3: fechas relativas tipo "hace 3 horas", "2 weeks ago",
+    # "Il y a 2 jours". Se interpretan RESTANDO el intervalo real.
+    #
+    # AVERÍA CONFIRMADA (1-nov-2026, Honduras): este caso devolvía
+    # datetime.now() para cualquier texto que contuviera "hace" o
+    # "ago", sin leer ni la cantidad ni la unidad. Consecuencias:
+    #   - "hace 2 semanas" se trataba como "ahora" y pasaba siempre el
+    #     filtro de antigüedad. Así entró al reporte del 1-nov una nota
+    #     de la OIT de doce días atrás, con el límite puesto en diez.
+    #   - las fechas francesas ("Il y a 2 jours") no casaban con ningún
+    #     término de la lista, devolvían None y, por la regla de
+    #     _dentro_del_rango, también pasaban. Haití llevaba meses sin
+    #     filtro de fecha efectivo.
+    # En la práctica el filtro de diez días solo se aplicaba de verdad
+    # cuando la fecha venía en la URL o en formato absoluto.
+    fecha_relativa = _parsear_fecha_relativa(publicado)
+    if fecha_relativa is not None:
+        return fecha_relativa
 
     # Caso 4: fecha con el mes en letra, "23 sept 2026" o "Sep 23, 2026".
     # Es el formato habitual de los resultados WEB (organic_results),
@@ -841,6 +854,103 @@ def _parsear_fecha_serpapi(item: Dict) -> Optional[datetime]:
         return fecha_con_mes
 
     return None
+
+
+# Unidades de tiempo en las tres lenguas en las que llegan las fichas
+# de SerpAPI: español (gl=mx/gt/...), inglés (algunas agencias) y
+# francés (Haití, hl=fr). El valor es la duración en días; para
+# minutos y horas se usan fracciones, que timedelta admite.
+_UNIDADES_RELATIVAS = {
+    "minuto": 1 / 1440, "minutos": 1 / 1440, "minute": 1 / 1440,
+    "minutes": 1 / 1440, "min": 1 / 1440, "mins": 1 / 1440,
+    "hora": 1 / 24, "horas": 1 / 24, "hour": 1 / 24, "hours": 1 / 24,
+    "heure": 1 / 24, "heures": 1 / 24, "hr": 1 / 24, "hrs": 1 / 24,
+    "día": 1, "dia": 1, "días": 1, "dias": 1, "day": 1, "days": 1,
+    "jour": 1, "jours": 1,
+    "semana": 7, "semanas": 7, "week": 7, "weeks": 7,
+    "semaine": 7, "semaines": 7,
+    "mes": 30, "meses": 30, "month": 30, "months": 30,
+    "mois": 30,
+    "año": 365, "anio": 365, "ano": 365, "años": 365, "anios": 365,
+    "anos": 365, "year": 365, "years": 365, "an": 365, "ans": 365,
+}
+
+# "hace 2 semanas" · "2 weeks ago" · "Il y a 2 jours" · "hace un mes"
+_RELATIVA_CANTIDAD = re.compile(
+    r"(?:hace|il\s+y\s+a)?\s*"
+    r"\b(\d{1,3}|una|uno|un|une|an|a)\b\s*"
+    r"([a-zá-úñ]+)"
+    r"\s*(?:ago|atrás|atras)?",
+    re.IGNORECASE,
+)
+
+# Textos relativos sin cantidad: se tratan como "ahora mismo".
+_RELATIVA_AHORA = re.compile(
+    r"ahora mismo|hace un momento|hace instantes|just now|moments? ago|"
+    r"à l['’]instant|a l['’]instant|il y a un instant",
+    re.IGNORECASE,
+)
+
+# "ayer" / "yesterday" / "hier".
+_RELATIVA_AYER = re.compile(r"\bayer\b|\byesterday\b|\bhier\b", re.IGNORECASE)
+
+
+def _parsear_fecha_relativa(texto: str) -> Optional[datetime]:
+    """
+    Interpreta una fecha relativa en español, inglés o francés y
+    devuelve el instante real al que apunta (UTC).
+
+    Devuelve None si el texto no es una fecha relativa reconocible, para
+    que quien llame siga probando otros formatos.
+
+    Ejemplos:
+        "hace 13 horas"   -> ahora - 13 h
+        "hace 2 semanas"  -> ahora - 14 días
+        "Il y a 2 jours"  -> ahora - 2 días
+        "2 weeks ago"     -> ahora - 14 días
+        "ayer"            -> ahora - 1 día
+    """
+    if not texto:
+        return None
+
+    ahora = datetime.now(timezone.utc)
+
+    if _RELATIVA_AHORA.search(texto):
+        return ahora
+    if _RELATIVA_AYER.search(texto):
+        return ahora - timedelta(days=1)
+
+    # Solo se consideran relativos los textos que llevan una marca
+    # explícita de "hace"/"ago"/"il y a". Sin ella, "23 oct 2026" se
+    # dejaría interpretar aquí como "23 octubres" por accidente.
+    if not re.search(r"hace\b|\bago\b|il\s+y\s+a|atr[áa]s", texto, re.IGNORECASE):
+        return None
+
+    match = _RELATIVA_CANTIDAD.search(texto)
+    if not match:
+        return None
+
+    cantidad_txt, unidad_txt = match.group(1).lower(), match.group(2).lower()
+    if cantidad_txt in ("un", "una", "uno", "a", "an", "une"):
+        cantidad = 1
+    else:
+        try:
+            cantidad = int(cantidad_txt)
+        except ValueError:
+            return None
+
+    unidad = _UNIDADES_RELATIVAS.get(_sin_tildes(unidad_txt)) \
+        or _UNIDADES_RELATIVAS.get(unidad_txt)
+    if unidad is None:
+        return None
+
+    return ahora - timedelta(days=cantidad * unidad)
+
+
+def _sin_tildes(texto: str) -> str:
+    """Minúsculas sin tildes, para comparar unidades de tiempo."""
+    descompuesto = unicodedata.normalize("NFD", texto.lower())
+    return "".join(c for c in descompuesto if unicodedata.category(c) != "Mn")
 
 
 # Meses en español e inglés, por sus primeras tres letras sin tilde.
@@ -1069,6 +1179,145 @@ _RUTAS_DE_INDICE = (
 )
 
 
+# ---------------------------------------------------------------------------
+# ENLACES REDIRECTORES DEL BUSCADOR
+#
+# AVERÍA CONFIRMADA (31-oct y 1-nov-2026): de un día para otro, Google
+# empezó a devolver parte de los resultados con el enlace envuelto en
+# un redirector propio — "https://www.google.com/goto?url=CAES…", con
+# un token opaco que no contiene la URL del medio. El 23 de octubre
+# fueron 0 de 44 enlaces; el 31, 23 de 38; el 1 de noviembre, 20 de 37.
+# No cambió nada en este código: cambió lo que devuelve el proveedor.
+#
+# El daño no es estético. Media docena de filtros de este módulo
+# razonan sobre el DOMINIO del enlace, y con un enlace de Google todos
+# quedan ciegos a la vez:
+#   - _fecha_desde_url pierde la fecha incrustada, que es la fuente de
+#     fecha MÁS fiable que tiene el sistema;
+#   - _es_dominio_curado_del_pais deja de reconocer a los medios de la
+#     lista curada, así que esas noticias tienen que probar su país por
+#     el texto;
+#   - _dominio_curado_de_otro_pais deja de proteger contra la noticia
+#     dominicana en el reporte de Haití;
+#   - _es_pagina_indice pierde la corroboración por la forma de la URL.
+#
+# Mitigación en dos tiempos. Aquí, sin red: se intenta recuperar la URL
+# real de otros campos de la ficha (el parámetro "url="/"q=" cuando
+# viene en claro, o el favicon, que suele llevar el dominio del medio).
+# Y en verificacion.py, para las noticias que SÍ se publican, se
+# resuelve el redirector de verdad con una petición HTTP.
+_DOMINIOS_REDIRECTORES = (
+    "google.com", "google.es", "google.com.mx", "news.google.com",
+    "googleusercontent.com",
+)
+
+_DOMINIOS_NO_EDITORIALES = _DOMINIOS_REDIRECTORES + (
+    "gstatic.com", "serpapi.com", "googleapis.com", "ggpht.com",
+)
+
+
+def es_enlace_redirector(link: str) -> bool:
+    """True si el enlace apunta al redirector del buscador y no al medio."""
+    if not link:
+        return False
+    netloc = urlparse(link).netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    return any(netloc == d or netloc.endswith("." + d)
+               for d in _DOMINIOS_REDIRECTORES)
+
+
+def _url_editorial_en(valor) -> Optional[str]:
+    """
+    Primera URL http(s) que aparezca dentro de `valor` (texto, lista o
+    dict, recursivamente) y que NO sea de Google ni de la propia API.
+    """
+    if isinstance(valor, str):
+        # Se recorre cada aparición de "http", no solo la primera: el
+        # favicon de la fuente es una URL de gstatic que lleva DENTRO,
+        # como parámetro, la del medio —
+        # "…/faviconV2?url=https://www.prensalibre.com&size=96" — y esa
+        # anidada es justamente la que interesa.
+        for coincidencia in re.finditer(r"https?://", valor):
+            bruto = re.match(r'https?://[^\s"\'<>\\]+',
+                             valor[coincidencia.start():])
+            if not bruto:
+                continue
+            texto = bruto.group(0)
+            # La forma recortada en "&" primero: una URL anidada en un
+            # parámetro termina ahí.
+            for candidata in (texto.split("&")[0], texto):
+                candidata = candidata.rstrip(").,;")
+                netloc = urlparse(candidata).netloc.lower()
+                if netloc.startswith("www."):
+                    netloc = netloc[4:]
+                if not netloc:
+                    continue
+                if any(netloc == d or netloc.endswith("." + d)
+                       for d in _DOMINIOS_NO_EDITORIALES):
+                    continue
+                return candidata
+        return None
+    if isinstance(valor, dict):
+        for v in valor.values():
+            encontrada = _url_editorial_en(v)
+            if encontrada:
+                return encontrada
+        return None
+    if isinstance(valor, (list, tuple)):
+        for v in valor:
+            encontrada = _url_editorial_en(v)
+            if encontrada:
+                return encontrada
+    return None
+
+
+def url_real_sin_red(item: Dict) -> Optional[str]:
+    """
+    Intenta recuperar la URL del medio a partir de la ficha, sin hacer
+    ninguna petición. Devuelve None si no hay forma de saberlo (el
+    token "goto?url=CAES…" está cifrado y no la contiene).
+
+    Dos vías, en orden:
+      1. El parámetro "url=" o "q=" del redirector, cuando viene en
+         claro (formato antiguo "google.com/url?q=https://medio…").
+      2. Cualquier otra URL del medio presente en la ficha: el icono
+         de la fuente suele ser un favicon cuyo parámetro lleva el
+         dominio real.
+    """
+    link = item.get("link") or ""
+    if not link or not es_enlace_redirector(link):
+        return None
+
+    consulta = urlparse(link).query
+    for clave in ("url", "q", "u"):
+        match = re.search(rf"(?:^|&){clave}=([^&]+)", consulta)
+        if not match:
+            continue
+        valor = unquote(match.group(1))
+        if valor.startswith("http://") or valor.startswith("https://"):
+            if not es_enlace_redirector(valor):
+                return valor
+
+    resto = {k: v for k, v in item.items() if k != "link"}
+    return _url_editorial_en(resto)
+
+
+def normalizar_enlaces(items: List[Dict]) -> List[Dict]:
+    """
+    Sustituye el enlace redirector por la URL real del medio siempre
+    que se pueda deducir sin red, conservando el original en
+    "_link_redirector". Se llama ANTES de los filtros duros para que
+    todos vuelvan a ver el dominio verdadero.
+    """
+    for item in items:
+        real = url_real_sin_red(item)
+        if real:
+            item["_link_redirector"] = item.get("link", "")
+            item["link"] = real
+    return items
+
+
 def _es_pagina_indice(item: Dict) -> bool:
     """
     True si el resultado es una página de listado (etiqueta, sección,
@@ -1112,6 +1361,13 @@ def _es_pagina_indice(item: Dict) -> bool:
         return True
     if re.search(r"[?&]page=", ruta):
         return True
+
+    # La regla 2 se apoya en la FORMA de la URL. Si el enlace sigue
+    # siendo el redirector del buscador (ruta "/goto", sin guiones), esa
+    # corroboración no dice nada del artículo y descartaría titulares
+    # cortos pero reales. Sin corroboración válida, no se descarta.
+    if es_enlace_redirector(link):
+        return False
 
     titulo = (item.get("title") or "").strip()
     if titulo and len(titulo.split()) <= 2:
@@ -1238,7 +1494,22 @@ def _buscar_una_vez(
         # Se trata como lista vacía para que el sistema continúe a la
         # capa de respaldo (anclas de texto) en vez de detenerse aquí.
         if "hasn't returned any results" in mensaje or "no results" in mensaje.lower():
-            return {"aceptadas": [], "descartadas_marginales": [], "error": None}
+            # Se marca, además de devolver vacío. Esta respuesta es
+            # AMBIGUA y conviene no olvidarlo: puede significar "esta
+            # semana no hubo nada" o puede significar que el buscador
+            # no pudo contestar. Durante el otoño de 2026 SerpAPI tuvo
+            # degradaciones reconocidas en sus APIs de Google —con
+            # Google News entre las afectadas— atribuidas a cambios de
+            # Google, y varios usuarios reportaron justamente este
+            # mensaje en consultas que antes funcionaban.
+            #
+            # Sin esta marca, un país vacío por una caída del proveedor
+            # y un país vacío porque de verdad no hubo noticias se ven
+            # EXACTAMENTE igual en el reporte. Es el mismo patrón de
+            # Haití: una propiedad de la herramienta leída como un
+            # hecho sobre el país.
+            return {"aceptadas": [], "descartadas_marginales": [],
+                    "error": None, "sin_resultados_del_buscador": True}
         return {"aceptadas": [], "descartadas_marginales": [], "error": mensaje}
 
     noticias_crudas = data.get("news_results", [])
@@ -1295,6 +1566,11 @@ def _buscar_una_vez(
     #    prensa (ver _es_dominio_no_periodistico).
     #  - entrega numerada de un programa o boletín periódico (ver
     #    _es_entrega_de_programa).
+    # Antes de cualquier filtro: si el buscador envolvió el enlace en
+    # su redirector, se intenta recuperar la URL del medio. Todos los
+    # filtros que siguen razonan sobre el dominio.
+    noticias_crudas = normalizar_enlaces(noticias_crudas)
+
     noticias_crudas = [
         item for item in noticias_crudas
         if _dentro_del_rango(item, dias_maximos_antiguedad)
@@ -1468,6 +1744,24 @@ def _buscar_prensa_pais(
     {"aceptadas": [...], "descartadas_marginales": [...], "error": str|None}
     """
 
+    # REGISTRO DE LAS RAMAS AUTOMÁTICAS (1-nov-2026).
+    #
+    # El flujo es fijo, pero tiene cuatro puntos donde el sistema toma
+    # un desvío él solo si algo no sale como se esperaba. Hasta hoy
+    # ninguno dejaba rastro, y eso tuvo una consecuencia concreta: al
+    # revisar el reporte del 1-nov no había forma de saber si Honduras
+    # trajo dos noticias porque esa semana hubo poco, o porque alguna
+    # consulta se amplió, se recortó o se cayó. Son situaciones
+    # distintas y en el documento se ven iguales.
+    #
+    # Esta lista es ese rastro. No cambia ninguna decisión: solo deja
+    # constancia de qué camino se tomó.
+    ramas: List[str] = []
+
+    def _con_ramas(resultado: Dict) -> Dict:
+        resultado["ramas"] = list(ramas)
+        return resultado
+
     def _buscar_con_fallback_fecha(query: str) -> Dict:
         """
         Aplica el fallback de 1 semana -> 2 semanas para una query dada.
@@ -1479,11 +1773,15 @@ def _buscar_prensa_pais(
         recurso más escaso del proyecto.
         """
         resultado = _buscar_una_vez(pais, api_key, query, rango_tiempo, max_resultados, dias_maximos_antiguedad)
+        if resultado.get("sin_resultados_del_buscador") and \
+                "el_buscador_dijo_sin_resultados" not in ramas:
+            ramas.append("el_buscador_dijo_sin_resultados")
         if resultado["error"] is not None:
             return resultado
         if resultado["aceptadas"] or rango_tiempo != "qdr:w":
             return resultado
 
+        ramas.append("ventana_ampliada_a_2_semanas")
         resultado_2sem = _buscar_una_vez(pais, api_key, query, "qdr:w2", max_resultados, dias_maximos_antiguedad=14)
         if resultado_2sem["error"] is not None:
             # La ampliación falló, pero lo de una semana sigue sirviendo.
@@ -1530,6 +1828,7 @@ def _buscar_prensa_pais(
     # las siglas: la consulta sale aún más corta Y con mejor
     # rendimiento por carácter.
     if _es_error_de_tiempo_agotado(resultado["error"]):
+        ramas.append("reintento_con_consulta_corta")
         resultado = _buscar_con_fallback_fecha(
             construir_query_site(pais, terminos_cortos_del_pais(pais), max_sitios=4)
         )
@@ -1548,7 +1847,7 @@ def _buscar_prensa_pais(
     error_capa_1 = resultado["error"]
 
     if error_capa_1 is None and len(resultado["aceptadas"]) >= n_noticias_necesarias:
-        return resultado
+        return _con_ramas(resultado)
 
     # Capa 2: respaldo con anclas de texto, sin restricción de dominio.
     # Se consulta SIEMPRE que la capa 1 no haya llegado al cupo
@@ -1557,6 +1856,7 @@ def _buscar_prensa_pais(
     # ya encontró. Se combinan tanto las aceptadas como las descartadas
     # marginales de ambas capas, para maximizar las candidatas
     # disponibles para el verificador LLM si después de todo hace falta.
+    ramas.append("busqueda_abierta_sin_lista_de_medios")
     query_anclas = construir_query(pais, terminos)
     resultado_anclas = _buscar_con_fallback_fecha(query_anclas)
 
@@ -1565,8 +1865,9 @@ def _buscar_prensa_pais(
         # devuelve lo suyo en vez de perderlo todo; si ambas fallaron,
         # entonces sí es un error real y se reporta.
         if error_capa_1 is not None:
-            return {"aceptadas": [], "descartadas_marginales": [], "error": error_capa_1}
-        return resultado
+            return _con_ramas({"aceptadas": [], "descartadas_marginales": [],
+                               "error": error_capa_1})
+        return _con_ramas(resultado)
 
     # Combinar aceptadas de ambas capas, deduplicando tanto por link
     # exacto como por similitud de título (el mismo evento puede llegar
@@ -1577,11 +1878,11 @@ def _buscar_prensa_pais(
 
     descartadas_combinadas = resultado["descartadas_marginales"] + resultado_anclas["descartadas_marginales"]
 
-    return {
+    return _con_ramas({
         "aceptadas": aceptadas_combinadas[:max_resultados],
         "descartadas_marginales": descartadas_combinadas[:max_resultados],
         "error": None,
-    }
+    })
 
 
 def buscar_noticias_pais(
@@ -2007,6 +2308,29 @@ _DOMINIO_CURADO_A_PAIS = {
 }
 
 
+def _fuente_casa_con_dominio(fuente: str, dominio: str) -> bool:
+    """
+    True si el NOMBRE del medio que da el buscador corresponde al
+    dominio curado: "Prensa Libre" ~ prensalibre.com, "Vanguardia.cu" ~
+    vanguardia.cu, "elsalvador.com" ~ elsalvador.com.
+
+    Es el respaldo para cuando el enlace viene envuelto en el
+    redirector del buscador y no se pudo recuperar la URL real: sin
+    esto, un medio de la lista curada deja de reconocerse como tal.
+    Se compara solo contra la etiqueta principal del dominio y se exige
+    coincidencia exacta tras normalizar, para no emparejar de más.
+    """
+    if not fuente or not dominio:
+        return False
+    etiqueta = dominio.split(".")[0]
+    if len(etiqueta) < 5:
+        # Etiquetas muy cortas ("tn8", "hoy") dan falsos positivos.
+        return False
+    normalizar = lambda t: re.sub(r"[^a-z0-9]", "", _sin_tildes(t))
+    return normalizar(fuente) == normalizar(etiqueta) or \
+        normalizar(fuente) == normalizar(dominio)
+
+
 def _es_dominio_curado_del_pais(item: Dict, pais_buscado: str) -> bool:
     """True si el link pertenece a un medio curado DEL país buscado."""
     link = item.get("link", "")
@@ -2018,6 +2342,12 @@ def _es_dominio_curado_del_pais(item: Dict, pais_buscado: str) -> bool:
     for dominio in SITIOS_PAIS.get(pais_buscado, []):
         if netloc == dominio or netloc.endswith("." + dominio):
             return True
+
+    # Enlace redirector sin URL recuperable: se reconoce por el nombre.
+    if es_enlace_redirector(link):
+        fuente = _extraer_fuente(item)
+        return any(_fuente_casa_con_dominio(fuente, d)
+                   for d in SITIOS_PAIS.get(pais_buscado, []))
     return False
 
 
@@ -2271,6 +2601,15 @@ def _dominio_curado_de_otro_pais(item: Dict, pais_buscado: str) -> bool:
     for dominio, pais_del_dominio in _DOMINIO_CURADO_A_PAIS.items():
         if netloc == dominio or netloc.endswith("." + dominio):
             return pais_del_dominio != pais_buscado
+
+    # Enlace redirector: la protección por dominio se perdería entera
+    # (una nota dominicana podría entrar al reporte de Haití). Se
+    # reconstruye por el nombre del medio.
+    if es_enlace_redirector(link):
+        fuente = _extraer_fuente(item)
+        for dominio, pais_del_dominio in _DOMINIO_CURADO_A_PAIS.items():
+            if _fuente_casa_con_dominio(fuente, dominio):
+                return pais_del_dominio != pais_buscado
     return False
 
 
