@@ -115,6 +115,41 @@ TEXTOS: Dict[str, Dict[str, str]] = {
                "ignores results stored under the previous logic (e.g. changes "
                "to the number of items or to the model)."),
     },
+    # Revisión manual y memoria entre corridas (ver memoria.py).
+    "revision_manual": {
+        "es": "🔎 Revisión manual",
+        "en": "🔎 Manual review",
+    },
+    "reincidentes_hay": {
+        "es": ("{n} noticia(s) han salido varias veces sin que se pudiera "
+               "verificar su fecha. Conviene abrirlas y, si están mal, vetarlas:"),
+        "en": ("{n} item(s) have appeared several times without their date "
+               "ever being verified. Worth opening and, if wrong, vetoing:"),
+    },
+    "reincidentes_ninguna": {
+        "es": "Ninguna noticia reincide sin verificar por ahora.",
+        "en": "No repeat items without verification so far.",
+    },
+    "vetar_enlace": {
+        "es": "Enlace de la noticia a vetar",
+        "en": "Link of the item to veto",
+    },
+    "vetar_motivo": {
+        "es": "Motivo (queda escrito en el registro)",
+        "en": "Reason (it is kept on the record)",
+    },
+    "vetar_boton": {
+        "es": "Vetar esta noticia",
+        "en": "Veto this item",
+    },
+    "vetar_hecho": {
+        "es": "Vetada. No volverá a publicarse y el motivo quedó guardado.",
+        "en": "Vetoed. It will not be published again and the reason is stored.",
+    },
+    "vetar_faltan_datos": {
+        "es": "Hacen falta el enlace y el motivo.",
+        "en": "Both the link and the reason are required.",
+    },
     "paises_cubiertos": {
         "es": "Países cubiertos ({n}):",
         "en": "Countries covered ({n}):",

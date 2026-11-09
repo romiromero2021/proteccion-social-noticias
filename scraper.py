@@ -135,6 +135,7 @@ SITIOS_PAIS = {
         "elmundo.cr",            # ya aportaba notas vía la capa 2 (ojo: NO es elmundo.sv)
         "elfinancierocr.com",    # económico; cubre la reforma de pensiones
         "observador.cr",
+        "teletica.com",          # televisora nacional (añadido 9-nov-2026)
         # lateja.cr retirado: es de sucesos y deportes, sin valor para este tema.
     ],
     "Cuba": [
@@ -227,6 +228,7 @@ SITIOS_PAIS = {
         "elnacional.com.do", "elcaribe.com.do",
         "eldinero.com.do",       # único medio especializado en economía
         "acento.com.do",
+        "almomento.net",         # digital nacional (añadido 9-nov-2026)
     ],
 }
 
@@ -1566,6 +1568,9 @@ def _buscar_una_vez(
     #    prensa (ver _es_dominio_no_periodistico).
     #  - entrega numerada de un programa o boletín periódico (ver
     #    _es_entrega_de_programa).
+    #  - prensa internacional que no nombra al país buscado (ver
+    #    _es_internacional_sin_el_pais): mismo motivo que el anterior,
+    #    para los medios cuyo dominio no revela de qué país hablan.
     # Antes de cualquier filtro: si el buscador envolvió el enlace en
     # su redirector, se intenta recuperar la URL del medio. Todos los
     # filtros que siguen razonan sobre el dominio.
@@ -1579,6 +1584,7 @@ def _buscar_una_vez(
         and not _es_entrega_de_programa(item)
         and not _dominio_curado_de_otro_pais(item, pais)
         and not _es_de_otro_pais_con_certeza(item, pais)
+        and not _es_internacional_sin_el_pais(item, pais)
     ]
 
     def _convertir(item: Dict, motivo: Optional[str] = None) -> Dict:
@@ -1656,6 +1662,8 @@ def _buscar_una_vez(
             motivo = "sin_evidencia_de_pais"
         elif _es_evento_ceremonial(item):
             motivo = "evento_ceremonial"
+        elif _es_acto_organico(item):
+            motivo = "acto_organico"
         elif tema_demasiado_debil:
             motivo = "tema_solo_en_extracto"
         elif es_respaldo_web:
@@ -2331,6 +2339,25 @@ def _fuente_casa_con_dominio(fuente: str, dominio: str) -> bool:
         normalizar(fuente) == normalizar(dominio)
 
 
+def es_de_medio_curado(noticia: Dict, pais: str) -> bool:
+    """
+    Versión pública de _es_dominio_curado_del_pais, para que el Agente 2
+    pueda tener en cuenta la procedencia al ORDENAR las noticias y no
+    solo al filtrarlas (ver summarizer.procesar_pais).
+
+    Hasta el 9-nov-2026 la lista curada decidía qué se buscaba y qué se
+    descartaba en duro, pero desaparecía en la selección final: ahí una
+    nota de un medio cualquiera competía de igual a igual con una de un
+    diario de referencia del país. En el reporte de ese día eso se vio
+    cuatro veces: entró un comunicado sindical de larepublica.net y
+    quedó fuera una marcha por la CCSS; entró una actividad local de
+    guatemala.gob.gt y quedó fuera una nota de agn.gt, que sí está
+    curado. La lista es el juicio editorial más caro que tiene el
+    sistema y no se usaba donde más vale.
+    """
+    return _es_dominio_curado_del_pais(noticia, pais)
+
+
 def _es_dominio_curado_del_pais(item: Dict, pais_buscado: str) -> bool:
     """True si el link pertenece a un medio curado DEL país buscado."""
     link = item.get("link", "")
@@ -2494,6 +2521,36 @@ EVENTOS_CEREMONIALES = [
 ]
 
 
+# Actos ORGÁNICOS: la vida interna de una organización. Son parientes
+# de los ceremoniales y hacían falta aparte.
+#
+# CASO CONFIRMADO (9-nov-2026, Costa Rica): el reporte publicó
+# "Comunicado: SINDICATO DE TRABAJADORAS Y TRABAJADORES DE LA EDUCACIÓN
+# COSTARRICENSE SEC - LVII ASAMBLEA NACIONAL ORDINARIA", cuyo contenido
+# es que el sindicato celebró su asamblea y reiteró su defensa de la
+# democracia. No hay medida, ni prestación, ni cifra. Mientras tanto
+# quedó fuera "Grupos marchan en San José para exigir mayor apoyo a la
+# CCSS y pago de deudas del Estado".
+#
+# Un sindicato de trabajadores dispara todas las señales temáticas
+# —"trabajadoras", "trabajadores", "sindicato"— sin que la noticia
+# trate de protección social. Lo que la delata no es el tema: es que
+# el hecho noticioso es un acto interno de la organización.
+#
+# Como los ceremoniales, NO se descartan en duro: una asamblea puede
+# aprobar algo real, y esa distinción necesita criterio.
+ACTOS_ORGANICOS = [
+    "asamblea", "asamblea nacional ordinaria", "asamblea general",
+    "congreso ordinario", "congreso nacional ordinario",
+    "toma de posesión", "toma de posesion", "juramentación", "juramentacion",
+    "juramenta", "nombramiento", "designa a", "designó a", "designo a",
+    "aniversario", "conmemora", "conmemoración", "conmemoracion",
+    "rinde homenaje", "homenaje", "reconocimiento a",
+    "sesión solemne", "sesion solemne", "acto protocolario",
+    "inauguró su sede", "inauguro su sede", "nueva sede",
+]
+
+
 def _es_evento_ceremonial(item: Dict) -> bool:
     """
     True si el TÍTULO indica que la noticia cubre un acto festivo,
@@ -2506,6 +2563,99 @@ def _es_evento_ceremonial(item: Dict) -> bool:
     )
 
 
+def _es_acto_organico(item: Dict) -> bool:
+    """
+    True si el TÍTULO indica que el hecho noticioso es un acto interno
+    de una organización y no una medida. Ver ACTOS_ORGANICOS.
+    """
+    titulo = _sin_tildes((item.get("title") or "").lower())
+    return any(
+        re.search(r"\b" + re.escape(_sin_tildes(acto)) + r"\b", titulo)
+        for acto in ACTOS_ORGANICOS
+    )
+
+
+# Prensa internacional: medios que no son prensa nacional de ninguno de
+# los diez países, y que cubren el mundo entero.
+#
+# CASO CONFIRMADO (9-nov-2026, Haití): el reporte publicó como noticia
+# de Haití "Conférence sociale en direct : le gouvernement annonce une
+# hausse du salaire minimum de 1,6", de France 24. La noticia es de
+# FRANCIA: el gobierno francés, el salario mínimo francés.
+#
+# Por qué no la atrapó nada. Haití se busca en francés, así que la
+# prensa francesa entra en la capa 2 con naturalidad y su titular es
+# temáticamente perfecto. El dominio es .com, así que el filtro de TLD
+# (_dominio_de_otro_pais) no dice nada. El texto no nombra a Haití,
+# así que quedó marginal por "sin_evidencia_de_pais" — que era el
+# PRIMER motivo de la cola de rescate. El editor la vio antes que
+# ninguna otra, leyó un titular impecable sobre salario mínimo y dijo
+# que sí.
+#
+# El mismo agujero existe en español con El País, BBC Mundo o CNN.
+#
+# La regla es la misma que para los dominios nacionales de otro país,
+# pero aquí hay que listar los medios a mano porque el dominio no
+# delata el país: de un medio internacional solo se acepta la noticia
+# que NOMBRA al país buscado. Si no lo nombra, no hay ninguna razón
+# para pensar que le concierne, y es un descarte duro —no marginal—
+# porque el editor ya demostró que un titular bueno le gana a la
+# ausencia de evidencia.
+MEDIOS_INTERNACIONALES = {
+    # Francófonos (la puerta por la que entró el caso de Haití)
+    "france24.com", "rfi.fr", "lemonde.fr", "lefigaro.fr", "liberation.fr",
+    "lapresse.ca", "radio-canada.ca", "tv5monde.com", "jeuneafrique.com",
+    # Hispanohablantes de fuera de la región
+    "elpais.com", "elmundo.es", "abc.es", "lavanguardia.com", "20minutos.es",
+    "rtve.es", "efe.com", "clarin.com", "lanacion.com.ar", "elcomercio.pe",
+    "eltiempo.com", "semana.com", "emol.com", "latercera.com",
+    # Anglófonos y agencias
+    "bbc.com", "bbc.co.uk", "cnn.com", "cnnespanol.cnn.com", "reuters.com",
+    "apnews.com", "nytimes.com", "washingtonpost.com", "theguardian.com",
+    "aljazeera.com", "dw.com", "euronews.com", "france24.fr",
+    "miamiherald.com", "univision.com", "telemundo.com", "voanoticias.com",
+    "vozdeamerica.com",
+}
+
+
+def _es_medio_internacional(item: Dict) -> bool:
+    """True si el enlace pertenece a un medio de MEDIOS_INTERNACIONALES."""
+    link = item.get("link", "")
+    if not link:
+        return False
+    netloc = urlparse(link).netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    if any(netloc == d or netloc.endswith("." + d)
+           for d in MEDIOS_INTERNACIONALES):
+        return True
+
+    # Enlace envuelto en el redirector del buscador: se reconoce por el
+    # nombre del medio, igual que en _es_dominio_curado_del_pais.
+    if es_enlace_redirector(link):
+        fuente = _extraer_fuente(item)
+        return any(_fuente_casa_con_dominio(fuente, d)
+                   for d in MEDIOS_INTERNACIONALES)
+    return False
+
+
+def _es_internacional_sin_el_pais(item: Dict, pais_buscado: str) -> bool:
+    """
+    Descarte DURO: la noticia viene de prensa internacional y su texto
+    no nombra al país buscado ni una sola vez.
+
+    Simétrico de _es_de_otro_pais_con_certeza, para los medios cuyo
+    dominio no revela de qué país hablan. Un medio curado del propio
+    país nunca cae aquí, aunque alguien lo añadiera por error a las dos
+    listas.
+    """
+    if _es_dominio_curado_del_pais(item, pais_buscado):
+        return False
+    if not _es_medio_internacional(item):
+        return False
+    return not _menciona_el_pais(item, pais_buscado)
+
+
 # Cuánto merece confiarse en una noticia marginal cuando hay que
 # rescatarla para completar el cupo. Número más bajo = se revisa antes.
 #
@@ -2516,21 +2666,39 @@ def _es_evento_ceremonial(item: Dict) -> bool:
 # "tema_ausente", el verificador la revisó para llenar el quinto hueco
 # y dijo que sí.
 #
-# El verificador juzga bien el PAÍS —esa pregunta es objetiva— pero ha
-# demostrado ser demasiado generoso con el TEMA. Así que las dudosas
-# por país se le ofrecen primero, y las que no tienen ni una palabra
-# del tema quedan al final de la cola: solo se miran si de verdad no
-# hay nada mejor.
+# El verificador juzga bien el PAÍS CUANDO HAY ALGO QUE JUZGAR —esa
+# pregunta es objetiva— pero ha demostrado ser demasiado generoso con
+# el TEMA. Así que las dudosas por país se le ofrecen primero, y las
+# que no tienen ni una palabra del tema quedan al final de la cola.
+#
+# CORRECCIÓN DEL 9-nov-2026 — "sin_evidencia_de_pais" baja del primer
+# puesto al penúltimo. Ese motivo no significa "hay una señal de país
+# y es dudosa": significa que NO HAY NINGUNA. Ni el medio está curado
+# para el país, ni el texto lo nombra una sola vez. La premisa de
+# arriba no se sostiene ahí, porque no hay nada sobre lo que el
+# editor pueda ejercer su buen juicio de país.
+#
+# Lo demostró la nota de France 24 sobre el salario mínimo francés
+# que salió en el reporte de Haití: quedó marginal por este motivo,
+# estaba por eso la PRIMERA de la cola, y el editor —viendo un titular
+# temáticamente impecable y nada que lo contradijera— dijo que sí.
+# Estar primero en la cola fue parte de la causa.
+#
+# El caso de France 24 ya no llega hasta aquí (lo para
+# _es_internacional_sin_el_pais), pero la lista de medios
+# internacionales nunca estará completa, y el orden es la defensa que
+# no depende de mantener una lista.
 PRIORIDAD_MOTIVO_MARGINAL = {
-    "sin_evidencia_de_pais": 1,
-    "tema_solo_en_extracto": 2,
-    "subdivision_de_otro_pais": 3,
-    "senal_de_otro_pais": 4,
-    "dominio_de_otro_pais": 5,
-    "menciona_otro_pais": 6,
-    "resultado_web": 7,
-    "evento_ceremonial": 8,
-    "tema_ausente": 9,   # el último recurso
+    "tema_solo_en_extracto": 1,
+    "subdivision_de_otro_pais": 2,
+    "senal_de_otro_pais": 3,
+    "dominio_de_otro_pais": 4,
+    "menciona_otro_pais": 5,
+    "resultado_web": 6,
+    "evento_ceremonial": 7,
+    "acto_organico": 8,
+    "sin_evidencia_de_pais": 9,
+    "tema_ausente": 10,   # el último recurso
 }
 
 

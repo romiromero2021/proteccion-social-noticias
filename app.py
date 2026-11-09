@@ -32,6 +32,7 @@ from scraper import buscar_noticias_pais, PAISES, TERMINOS_TEMATICOS
 from summarizer import (procesar_pais, generar_documento_word, modelo_en_uso,
                         configurar_base_url, es_error_de_bloqueo_de_red)
 import cache
+import memoria
 
 
 def _normalizar_nombre_archivo(texto: str) -> str:
@@ -62,6 +63,13 @@ st.set_page_config(
 
 cache.inicializar_db()
 cache.limpiar_cache_antiguo(dias_a_conservar=3)
+
+# La memoria entre corridas vive en su propio archivo y se conserva
+# mucho más tiempo que el caché: su valor está en ser vieja (ver
+# memoria.py). Por eso se limpia con su propio plazo y no con el de
+# arriba.
+memoria.inicializar_db()
+memoria.limpiar_memoria_antigua()
 
 # ---------------------------------------------------------------------------
 # ESTADO DE SESIÓN (se inicializa temprano para que el sidebar pueda usarlo)
@@ -146,6 +154,37 @@ with st.sidebar:
         st.session_state.reportes = {}  # también limpiar lo que se ve en pantalla
         st.success(t("cache_borrado", idioma, cantidad=cantidad))
     st.caption(t("ayuda_cache", idioma))
+
+    # VETO MANUAL Y REINCIDENTES (9-nov-2026).
+    #
+    # Hasta ahora, cuando alguien abría una noticia y comprobaba que su
+    # fecha era falsa, no había dónde dejar constancia: el sistema la
+    # volvía a publicar la semana siguiente. Esto es ese sitio.
+    #
+    # Es la única parte de la aplicación donde un juicio humano cambia
+    # el comportamiento del sistema, así que pide un motivo y lo
+    # guarda con la fecha. Ver memoria.py.
+    st.divider()
+    with st.expander(t("revision_manual", idioma)):
+        sospechosas = memoria.reincidentes()
+        if sospechosas:
+            st.caption(t("reincidentes_hay", idioma, n=len(sospechosas)))
+            for fila in sospechosas[:10]:
+                st.caption(
+                    f"· {fila['titulo'][:70]} — {fila['veces']}× "
+                    f"(desde {fila['primera_vez']})"
+                )
+        else:
+            st.caption(t("reincidentes_ninguna", idioma))
+
+        enlace_a_vetar = st.text_input(t("vetar_enlace", idioma), key="veto_url")
+        motivo_veto = st.text_input(t("vetar_motivo", idioma), key="veto_motivo")
+        if st.button(t("vetar_boton", idioma), use_container_width=True):
+            if enlace_a_vetar.strip() and motivo_veto.strip():
+                memoria.vetar(enlace_a_vetar, motivo_veto.strip())
+                st.success(t("vetar_hecho", idioma))
+            else:
+                st.warning(t("vetar_faltan_datos", idioma))
 
     st.divider()
     st.caption(t("paises_cubiertos", idioma, n=len(PAISES)))

@@ -14,9 +14,10 @@ import re
 import time
 from datetime import datetime
 from cache import ZONA_HORARIA
-from scraper import (deduplicar_noticias, ordenar_marginales, titulos_similares,
-                     DIAS_MAXIMOS_ANTIGUEDAD)
+from scraper import (deduplicar_noticias, es_de_medio_curado, ordenar_marginales,
+                     titulos_similares, DIAS_MAXIMOS_ANTIGUEDAD)
 from verificacion import verificar_noticias
+import memoria
 from typing import List, Dict
 
 import groq
@@ -347,21 +348,94 @@ def puntuar_candidatas(
     candidatas: List[Dict], pais: str, groq_api_key: str
 ) -> Dict[int, Dict]:
     """
-    Puntúa en UNA sola llamada todas las candidatas de un país.
+    Puntúa TODAS las candidatas de un país, en tandas de
+    MAX_CANDIDATAS_A_PUNTUAR.
 
     Devuelve {indice: {"nota": int, "razon": str}} con los índices de la
-    lista recibida. Si la llamada falla, devuelve {} — el que llama
-    decide qué hacer con eso (ver procesar_pais: se publica lo que
-    aprobaron los filtros, para no quedarse sin reporte).
+    lista recibida. Si una llamada falla, las candidatas de esa tanda
+    se quedan sin nota y procesar_pais las registra como tales.
+
+    POR QUÉ EN TANDAS (9-nov-2026). Antes se mandaba `candidatas[:14]`
+    y punto: de la decimoquinta en adelante, nadie las puntuaba nunca.
+    No desaparecían —procesar_pais las anota como "el editor no la
+    puntuó"— pero en la práctica quedaban fuera del boletín sin que
+    ningún juicio las hubiera mirado, y el corte caía justo donde
+    menos conviene: `ordenar_marginales` pone al final de la cola los
+    motivos menos rescatables, así que el tope recortaba por el lado
+    correcto… mientras hubiera menos de 14. Pasado ese número, el
+    recorte empieza a comerse candidatas legítimas en silencio.
+    Una segunda llamada cuesta unos segundos; perder una noticia
+    buena, una semana.
+    """
+    if not candidatas:
+        return {}
+
+    notas: Dict[int, Dict] = {}
+    for inicio in range(0, len(candidatas), MAX_CANDIDATAS_A_PUNTUAR):
+        lote = candidatas[inicio:inicio + MAX_CANDIDATAS_A_PUNTUAR]
+        if inicio:
+            # Mismo ritmo que el resto de llamadas: el límite de Groq
+            # es de fichas por minuto y esta es la llamada más grande.
+            time.sleep(ESPERA_ENTRE_LLAMADAS_SEGUNDOS)
+        for i, info in _puntuar_lote(lote, pais, groq_api_key).items():
+            notas[inicio + i] = info
+    return notas
+
+
+# Cualquier espacio en blanco que parta la línea. Se incluyen los
+# separadores Unicode de línea y párrafo, que un titular copiado de un
+# PDF puede traer y que pasan desapercibidos.
+_ROMPE_LINEA = re.compile(r"[\r\n  \v\f]+")
+
+
+def sanear_campo(texto: str, limite: int) -> str:
+    """
+    Deja un campo de contenido NO CONFIABLE en una sola línea, sin el
+    separador del formato de salida, y recortado.
+
+    POR QUÉ (aplicado el 9-nov-2026). El prompt del editor se arma
+    pegando título, fuente y extracto, que vienen de la web abierta, y
+    le pide al modelo que conteste `numero|nota|razon`. Si un titular
+    contiene un salto de línea seguido de algo con esa forma, en el
+    prompt queda una línea indistinguible de la respuesta que el
+    propio modelo debe producir, y el intérprete la acepta como suya.
+    No hace falta engañar al modelo: basta con imitar su letra.
+
+    No intenta detectar intenciones —no se puede mantener una lista de
+    todas las maneras de escribir «ignora las instrucciones
+    anteriores»—: le quita la FORMA que el texto necesita para hacerse
+    pasar por otra cosa. Un titular que diga «ignora las
+    instrucciones» sigue diciéndolo, y está bien: es un titular.
+
+    Cubría los cuatro casos marcados `@pytest.mark.hueco_conocido` en
+    evals/test_adversarial.py, que estuvieron en rojo a propósito desde
+    el 21-oct para que la brecha viviera en el registro y no en la
+    cabeza de nadie.
+    """
+    limpio = _ROMPE_LINEA.sub(" ", texto or "")
+    limpio = limpio.replace("|", "/")          # el separador del formato
+    limpio = re.sub(r"\s{2,}", " ", limpio).strip()
+    return limpio[:limite]
+
+
+def _puntuar_lote(
+    candidatas: List[Dict], pais: str, groq_api_key: str
+) -> Dict[int, Dict]:
+    """
+    Una sola llamada al editor con las candidatas que recibe. Los
+    índices que devuelve son relativos a ESTA lista.
     """
     if not candidatas:
         return {}
 
     lineas = []
-    for i, n in enumerate(candidatas[:MAX_CANDIDATAS_A_PUNTUAR], start=1):
-        titulo = (n.get("titulo") or "")[:180]
-        fuente = (n.get("fuente") or "")[:60]
-        extracto = (n.get("snippet") or "")[:280]
+    for i, n in enumerate(candidatas, start=1):
+        # Los tres campos son contenido que escribió un desconocido y
+        # que acaba DENTRO de las instrucciones al modelo. Ver
+        # sanear_campo.
+        titulo = sanear_campo(n.get("titulo"), 180)
+        fuente = sanear_campo(n.get("fuente"), 60)
+        extracto = sanear_campo(n.get("snippet"), 280)
         lineas.append(f"{i}. TÍTULO: {titulo}\n   FUENTE: {fuente}\n   EXTRACTO: {extracto}")
 
     prompt = (
@@ -442,23 +516,71 @@ def puntuar_candidatas(
         f"El límite: la macroeconomía general (PIB, tipo de cambio, "
         f"deuda, bolsa) NO entra por sí sola. Entra cuando la noticia "
         f"la pone en relación con salarios, pensiones, empleo o "
-        f"prestaciones.\n\n"
-        f"COMUNICADOS OFICIALES — al menos 2. Un anuncio del Congreso, de "
-        f"un ministerio o de la institución de seguridad social de "
-        f"{pais} sobre un asunto del boletín vale 2 aunque solo exprese "
-        f"una posición o una prioridad y no una decisión ya tomada: al "
-        f"analista le sirve saber que el legislativo se está moviendo en "
-        f"ese tema. Llega a 3 solo si trae algo concreto —una iniciativa "
-        f"identificable, una votación, una cifra, una fecha—. Lo que no "
-        f"puede es quedarse en 0 o 1 por ser escueto: lo escueto se "
-        f"castiga con la nota 2, no con la exclusión.\n\n"
-        f"Ojo con dos trampas:\n"
+        f"prestaciones.\n"
+        f"Y cuenta también lo que el salario ALCANZA A PAGAR: si una "
+        f"noticia dice que los salarios no dan para la vivienda, la "
+        f"canasta básica, la salud o los servicios, eso es un dato de "
+        f"suficiencia y va con 3. Es la misma pregunta que «cuánto "
+        f"alcanza una pensión», mirada desde el gasto.\n\n"
+        f"ACCESO AL EMPLEO — entra, con el mismo rango que el resto. "
+        f"Quién consigue trabajo y quién no es la puerta de entrada a "
+        f"la seguridad social contributiva, así que el boletín lo "
+        f"sigue: desempleo y sus cifras, desempleo juvenil, el primer "
+        f"empleo y las barreras para conseguirlo (que pidan "
+        f"experiencia a quien no puede tenerla), desempleo de larga "
+        f"duración, informalidad como exclusión de la cobertura, "
+        f"migración laboral y programas de empleo temporal. Una "
+        f"noticia sobre jóvenes que no logran entrar al mercado "
+        f"laboral de {pais} va con 2 o 3, no con 1: describe quién "
+        f"queda fuera del sistema.\n\n"
+        f"COMUNICADOS OFICIALES DEL ESTADO — al menos 2. Un anuncio del "
+        f"Congreso, de un ministerio o de la institución de seguridad "
+        f"social de {pais} sobre un asunto del boletín vale 2 aunque "
+        f"solo exprese una posición o una prioridad y no una decisión ya "
+        f"tomada: al analista le sirve saber que el legislativo se está "
+        f"moviendo en ese tema. Llega a 3 solo si trae algo concreto —una "
+        f"iniciativa identificable, una votación, una cifra, una fecha—. "
+        f"Lo que no puede es quedarse en 0 o 1 por ser escueto: lo "
+        f"escueto se castiga con la nota 2, no con la exclusión.\n"
+        f"Este suelo de 2 vale SOLO para órganos del Estado y SOLO "
+        f"cuando el comunicado trata de una medida, una prestación, una "
+        f"cifra o una posición de política. El comunicado de un "
+        f"sindicato, una cámara empresarial, una ONG o un partido NO "
+        f"tiene suelo: se puntúa por lo que diga, como cualquier otra "
+        f"noticia. Y la palabra «Comunicado» en el titular no activa "
+        f"nada por sí sola.\n\n"
+        f"ACTOS INTERNOS DE UNA ORGANIZACIÓN — van con 1. Una asamblea, "
+        f"un congreso ordinario, una toma de posesión, una "
+        f"juramentación, un nombramiento, un aniversario, un homenaje o "
+        f"una reunión de seguimiento son la vida interna de la "
+        f"organización, no una medida de protección social, aunque la "
+        f"organización sea un sindicato de trabajadores o la propia "
+        f"institución de seguridad social, y aunque en el acto se "
+        f"reiteren posiciones. Suben a 2 o 3 solo si la noticia dice que "
+        f"de ahí salió algo concreto: un acuerdo con contenido, una "
+        f"cifra, una medida que empieza a aplicarse.\n\n"
+        f"ALCANCE — a igualdad de tema, lo nacional vale más que lo "
+        f"local. Una medida, una cifra o un conflicto de alcance "
+        f"nacional va con 3. La actividad rutinaria de una oficina en "
+        f"un municipio —una feria de empleo, una jornada de "
+        f"afiliación, una unidad móvil que visita una localidad, una "
+        f"entrega en un barrio— va con 1, por correcta que sea, salvo "
+        f"que traiga cifras nacionales o inaugure un programa nuevo. No "
+        f"es que la actividad local no importe: es que en un boletín de "
+        f"cinco noticias por país ocupa el lugar de algo que afecta a "
+        f"todo el país.\n\n"
+        f"Ojo con tres trampas:\n"
         f"- Que el nombre del país aparezca dentro del nombre de otro "
         f"lugar no lo hace de {pais} (\"Villa El Salvador\" es un "
         f"distrito de Lima).\n"
         f"- Que un acto ocurra en un edificio llamado \"Centro de "
         f"Seguridad Social\" no convierte el acto en noticia de "
-        f"protección social.\n\n"
+        f"protección social.\n"
+        f"- Si la noticia no dice en ninguna parte que ocurre en "
+        f"{pais}, no la des por buena porque el tema encaje: un medio "
+        f"internacional cubriendo la reforma de OTRO país produce "
+        f"titulares perfectos para este boletín y no corresponden. Sin "
+        f"una señal de que es de {pais}, ponle 0.\n\n"
         f"REPETICIONES. Si varias noticias cubren EL MISMO hecho —el "
         f"mismo anuncio, el mismo foro, la misma reforma— quédate con "
         f"la más completa y puntúa las demás con 1, poniendo como "
@@ -673,15 +795,52 @@ def procesar_pais(
                 continue
             puntuadas.append(dict(n, nota=info["nota"], razon=info["razon"]))
 
-        # Orden estable: primero la nota, y a igual nota se respeta el
-        # orden en que llegaron (las de medios curados van antes).
-        puntuadas.sort(key=lambda n: -n["nota"])
-        seleccion = [n for n in puntuadas if n["nota"] >= NOTA_MINIMA_PARA_PUBLICAR][:n_noticias]
+        # Orden: primero la nota, y a igual nota primero el medio
+        # curado del país.
+        #
+        # LA PROCEDENCIA ENTRA EN EL ORDEN (9-nov-2026). Antes el orden
+        # era solo por nota, con el desempate implícito del orden de
+        # llegada. El reporte del 9-nov mostró el costo cuatro veces en
+        # un mismo documento: entró un comunicado sindical de
+        # larepublica.net y quedó fuera una marcha por la CCSS; entró
+        # una actividad local de guatemala.gob.gt y quedó fuera una
+        # nota de agn.gt; entró una nota de vanguardia.cu de julio y
+        # quedó fuera una de diariodecuba.com de anteayer. En los tres
+        # casos la que entró venía de un medio que NO está en la lista
+        # curada y la que quedó fuera venía de uno que sí.
+        #
+        # La lista curada es el juicio editorial más caro que tiene el
+        # sistema —cada dominio se revisó a mano— y hasta hoy solo se
+        # usaba para buscar y para descartar. Aquí es donde se decide
+        # qué lee la analista, y aquí no contaba nada.
+        #
+        # Es un desempate, no un veto: una noticia excelente de un
+        # medio no curado (3) sigue ganándole a una correcta de un
+        # medio curado (2). Lo que ya no pasa es que las dos empaten y
+        # gane la de procedencia desconocida por haber llegado antes.
+        puntuadas.sort(key=lambda n: (-n["nota"],
+                                      0 if es_de_medio_curado(n, pais) else 1))
+
+        # MEMORIA ENTRE CORRIDAS (9-nov-2026). Se aplica ANTES de
+        # recortar al cupo, no después: así una noticia repetida no
+        # deja un hueco, la sustituye la siguiente mejor. Y antes de
+        # verificar, para no gastar peticiones en algo que no se va a
+        # publicar. Ver memoria.py.
+        aprobadas = [n for n in puntuadas
+                     if n["nota"] >= NOTA_MINIMA_PARA_PUBLICAR]
+        aprobadas, repetidas = memoria.filtrar_ya_publicadas(aprobadas)
+
+        seleccion = aprobadas[:n_noticias]
+
+        # Las repetidas ya traen su propio motivo, así que se excluyen
+        # de la lista general para que no salgan dos veces en el panel.
+        links_repetidos = {r.get("link") for r in repetidas if r.get("link")}
         descartadas = [
             {"titulo": n["titulo"], "fuente": n.get("fuente", ""),
              "link": n.get("link", ""), "nota": n["nota"], "razon": n["razon"]}
-            for n in puntuadas if n not in seleccion
-        ] + sin_puntuar
+            for n in puntuadas
+            if n not in seleccion and n.get("link") not in links_repetidos
+        ] + sin_puntuar + repetidas
 
     # VERIFICACIÓN CONTRA LA PÁGINA DEL MEDIO (1-nov-2026).
     #
@@ -743,6 +902,13 @@ def procesar_pais(
             "nota": noticia.get("nota"),
             "razon": noticia.get("razon", ""),
         })
+
+    # Se anota en la memoria lo que de verdad se publicó, con su estado
+    # de verificación. Es lo que permite que la próxima corrida sepa
+    # que esta noticia ya salió, y cuántas veces salió sin poder
+    # comprobarse (ver memoria.py). Va al final, después de resumir:
+    # solo cuenta lo que llegó al reporte.
+    memoria.registrar_publicadas(procesadas, pais)
 
     return {"pais": pais, "noticias": procesadas, "sin_resultados": False,
             "errores_llm": errores_llm, "descartadas": descartadas,

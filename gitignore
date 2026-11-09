@@ -1,0 +1,34 @@
+# Qué NO sube al repositorio
+# ==========================
+
+# CLAVES. Nunca, por ningún motivo. Si alguna vez se sube una, borrar
+# el archivo no basta: el historial la conserva y cualquiera puede
+# leerlo. Hay que ir al proveedor, revocar esa clave y emitir otra.
+.streamlit/secrets.toml
+secrets.toml
+*.env
+.env
+
+# BASES DE DATOS. No son peligrosas, son DATOS: crecen, son distintas
+# en cada máquina y no le corresponden a un repositorio de código.
+# Las dos se regeneran solas.
+cache_noticias.db
+memoria_noticias.db
+*.db
+
+# Reportes generados
+reporte_proteccion_social_*.docx
+*.docx
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Sistema operativo y editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
