@@ -1118,6 +1118,23 @@ _DOMINIOS_NO_PERIODISTICOS = (
     "linkedin.com", "reddit.com", "pinterest.com",
     "whatsapp.com", "t.me", "telegram.me",
     "news.google.com",
+    # Agregadores y bases de datos documentales. No son prensa: toman
+    # la nota de otro medio y la republican con SU fecha, que es la de
+    # la carga en la base y no la de la publicación original.
+    #
+    # CASO CONFIRMADO (10-nov-2026, R. Dominicana): el reporte llevó
+    # como noticia 3 una ficha de business-humanrights.org fechada
+    # "hace 16 horas". El artículo original es del 13 de septiembre,
+    # casi dos meses antes. Es el mismo perfil que la nota de
+    # Vanguardia: una fecha de republicación presentada como fecha de
+    # publicación, y encima la ficha no se deja verificar.
+    # No se incluye reliefweb.int a propósito: es un repositorio, sí,
+    # pero para Haití —el país con menos cobertura— puede ser la única
+    # fuente de una nota de asistencia social real. Queda fuera de
+    # esta lista hasta que haya un caso que lo justifique.
+    "business-humanrights.org",
+    "pressreader.com", "msn.com", "news.yahoo.com", "flipboard.com",
+    "scribd.com", "issuu.com", "academia.edu", "researchgate.net",
 )
 
 

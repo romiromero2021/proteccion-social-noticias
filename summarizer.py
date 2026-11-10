@@ -498,7 +498,28 @@ def _puntuar_lote(
         f"Este límite solo se aplica a las medidas dirigidas a la "
         f"población en general; si la noticia acota el beneficio a "
         f"quienes no tienen seguridad social, manda la regla "
-        f"anterior.\n\n"
+        f"anterior.\n"
+        f"LA PREGUNTA QUE DECIDE no es «¿habla de salud?» sino "
+        f"«¿habla de COBERTURA?». Si la noticia trata de a quién le "
+        f"toca, qué tiene derecho a recibir, cómo se le garantiza, o "
+        f"de si la institución de seguridad social se lo está "
+        f"entregando, entonces es protección social y va con 2 o 3 "
+        f"aunque la palabra «salud» aparezca en cada frase. Si trata "
+        f"de epidemiología o de salud pública general —cuántos casos "
+        f"de un virus hay este mes, qué recomienda el ministerio para "
+        f"no contagiarse— va con 1.\n"
+        f"SÍ entran: una ley que garantiza la protección social y el "
+        f"acceso a servicios de salud a un grupo determinado "
+        f"(pacientes con enfermedades raras, personas con "
+        f"discapacidad, personas mayores); cómo están funcionando los "
+        f"centros de la institución de seguridad social después de "
+        f"una emergencia; un brote de enfermedad entre los "
+        f"trabajadores de un centro de trabajo, que es salud "
+        f"ocupacional. NO entra: «circulan varios virus respiratorios "
+        f"este mes».\n"
+        f"Y si el propio titular dice «protección social», no "
+        f"concluyas que le falta enfoque social: eso es exactamente "
+        f"lo que el boletín busca.\n\n"
         f"COBERTURA, SUFICIENCIA Y EROSIÓN — también es el tema, y NO "
         f"hace falta que haya un anuncio. Un boletín de monitoreo "
         f"necesita las dos mitades: lo que el Estado ANUNCIA y lo que "
@@ -537,11 +558,23 @@ def _puntuar_lote(
         f"del empleo o de la cobertura, no cualquier asunto del mundo "
         f"del trabajo. NO entran, y van con 1: la dificultad de las "
         f"empresas o de un sector para encontrar personal, los tiempos "
-        f"de traslado y el tráfico, la productividad, el clima "
-        f"laboral o las expectativas salariales de quien busca "
-        f"empleo. Describen las condiciones del negocio o la logística "
-        f"de la ciudad, no el acceso de las personas a la protección "
-        f"social.\n\n"
+        f"de traslado y el tráfico, el clima laboral o las "
+        f"expectativas salariales de quien contrata. Describen las "
+        f"condiciones del negocio o la logística de la ciudad, no el "
+        f"acceso de las personas a la protección social.\n\n"
+        f"SALUD Y CONDICIONES DE TRABAJO — sí entran, con 2 o 3. Los "
+        f"riesgos laborales son una de las ramas clásicas de la "
+        f"seguridad social, así que el boletín sigue lo que le pasa al "
+        f"cuerpo de quien trabaja: enfermedad profesional, accidentes, "
+        f"calor extremo, jornada, descanso, acoso laboral, "
+        f"inspecciones de condiciones. Si una noticia dice que algo "
+        f"está dañando la salud de las personas trabajadoras de "
+        f"{pais}, va con 3 aunque hable además de productividad y "
+        f"aunque no haya ninguna medida de por medio: describe un "
+        f"riesgo al que el sistema debería responder.\n"
+        f"La productividad SOLA, como indicador de la economía o de "
+        f"una empresa, no entra; la productividad junto a la salud o "
+        f"las condiciones de quien trabaja, sí.\n\n"
         f"CONFLICTO Y EXIGENCIA — es el tema, y NO hace falta que "
         f"nadie anuncie nada. Una huelga, un paro, una marcha, una "
         f"demanda sindical, una denuncia de desfinanciamiento, la "
@@ -584,8 +617,9 @@ def _puntuar_lote(
         f"reiteren posiciones. Suben a 2 o 3 solo si la noticia dice que "
         f"de ahí salió algo concreto: un acuerdo con contenido, una "
         f"cifra, una medida que empieza a aplicarse.\n\n"
-        f"ALCANCE — a igualdad de tema, lo nacional vale más que lo "
-        f"local. Una medida, una cifra o un conflicto de alcance "
+        f"ALCANCE Y RUTINA — a igualdad de tema, lo nacional vale más "
+        f"que lo local, y lo que cambia vale más que lo que sigue "
+        f"igual. Una medida, una cifra o un conflicto de alcance "
         f"nacional va con 3. La actividad rutinaria de una oficina en "
         f"un municipio —una feria de empleo, una jornada de "
         f"afiliación, una unidad móvil que visita una localidad, una "
@@ -593,7 +627,15 @@ def _puntuar_lote(
         f"que traiga cifras nacionales o inaugure un programa nuevo. No "
         f"es que la actividad local no importe: es que en un boletín de "
         f"cinco noticias por país ocupa el lugar de algo que afecta a "
-        f"todo el país.\n\n"
+        f"todo el país.\n"
+        f"Señal clara de rutina: el titular dice que la institución "
+        f"CONTINÚA, SIGUE o MANTIENE algo que ya venía haciendo. "
+        f"«Puerto Barrios continúa conectando talento con "
+        f"oportunidades laborales» y «Ministerio de Trabajo continúa "
+        f"con inspecciones nocturnas» son exactamente eso: partes de "
+        f"actividad, sin hecho nuevo. Van con 1. En cambio «el "
+        f"Ministerio ABRE una línea de inspección» o «el programa "
+        f"SUMA 40 000 beneficiarios» sí traen un hecho.\n\n"
         f"Ojo con tres trampas:\n"
         f"- Que el nombre del país aparezca dentro del nombre de otro "
         f"lugar no lo hace de {pais} (\"Villa El Salvador\" es un "
@@ -1047,6 +1089,31 @@ def _agregar_portada(doc: Document, fecha_str: str, titulo_texto: str, nota_text
     doc.add_paragraph()  # espacio
 
 
+# Qué decirle a quien LEE el documento sobre cada desvío. No son las
+# etiquetas de la interfaz (_ETIQUETA_RAMA en app.py): aquí el lector
+# no sabe qué es una "rama", así que cada texto explica la consecuencia
+# para la noticia que tiene delante.
+#
+# No se listan las ramas que no cambian lo que el lector ve.
+_ETIQUETA_RAMA_DOC = {
+    "ventana_ampliada_a_2_semanas": (
+        "la búsqueda de la última semana no devolvió nada, así que se "
+        "amplió a dos semanas; puede haber noticias de hasta 14 días."),
+    "busqueda_abierta_sin_lista_de_medios": (
+        "la lista de medios habituales no alcanzó el cupo, así que se "
+        "buscó también fuera de ella."),
+    "reintento_con_consulta_corta": (
+        "el buscador agotó el tiempo de espera y se reintentó con una "
+        "consulta más corta, que cubre menos medios de este país."),
+    "editor_sin_respuesta_publicado_sin_revisar": (
+        "el revisor automático no respondió: estas noticias pasaron los "
+        "filtros pero NADIE juzgó si son pertinentes."),
+    "el_buscador_dijo_sin_resultados": (
+        "el buscador respondió «sin resultados» en alguna consulta, lo "
+        "que puede significar que no había nada o que falló."),
+}
+
+
 def _agregar_pais(doc: Document, datos_pais: Dict):
     pais = datos_pais["pais"]
 
@@ -1084,6 +1151,29 @@ def _agregar_pais(doc: Document, datos_pais: Dict):
         run_vacio.font.color.rgb = COLOR_GRIS
         doc.add_paragraph()
         return
+
+    # EL DESVÍO SE DICE DENTRO DEL DOCUMENTO (10-nov-2026).
+    #
+    # Las ramas se registraban desde el 1 de noviembre y se mostraban
+    # en la aplicación, pero NO en el Word — que es el archivo que
+    # circula. El 10 de noviembre el reporte de Honduras llevó una
+    # noticia del 29 de octubre, doce días atrás, con un límite
+    # declarado de diez. No era un error: la búsqueda no había
+    # encontrado nada y el sistema amplió la ventana a catorce días
+    # él solo. Pero quien leyó el documento no tenía forma de saberlo,
+    # y la pregunta razonable fue "¿esto no está fuera de rango?".
+    #
+    # Es el mismo principio que el aviso de fecha sin verificar: una
+    # salvedad que vive solo en la pantalla no existe para quien
+    # recibe el archivo.
+    avisos = [_ETIQUETA_RAMA_DOC[r] for r in datos_pais.get("ramas", [])
+              if r in _ETIQUETA_RAMA_DOC]
+    if avisos:
+        p_rama = doc.add_paragraph()
+        rama_run = p_rama.add_run("Nota sobre esta búsqueda: " + " ".join(avisos))
+        rama_run.font.size = Pt(9)
+        rama_run.font.italic = True
+        rama_run.font.color.rgb = COLOR_AVISO
 
     for idx, noticia in enumerate(datos_pais["noticias"], start=1):
         sub = doc.add_heading(level=2)

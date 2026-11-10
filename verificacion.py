@@ -50,6 +50,7 @@ import json
 import os
 import re
 import unicodedata
+from html import unescape
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
@@ -174,8 +175,19 @@ _ISO = re.compile(
 # La primera versión de este patrón exigía "17 de julio de 2026" y por
 # eso no reconocía nada en esa página.
 _FECHA_EN_LETRA_ES = re.compile(
-    r"(\d{1,2})\s+(?:de\s+)?([a-záéíóú]{4,10})\.?\s+(?:de\s+|del\s+)?(\d{4})",
+    r"(\d{1,2})\s+(?:de\s+)?([a-záéíóúàèêûüçñ]{3,10})\.?\s+(?:de\s+|del\s+)?(\d{4})",
     re.IGNORECASE)
+
+# "2026-11-03" escrito en el cuerpo de la página.
+#
+# AVERÍA CONFIRMADA (10-nov-2026, Haití). Las tres noticias haitianas
+# del reporte salieron con "sin fecha legible" teniendo la fecha a la
+# vista en la página. Una de las causas: los dos patrones de texto
+# daban por hecho que el día va primero ("3 de noviembre de 2026",
+# "03/11/2026"), y Le Nouvelliste la escribe al revés, en forma ISO.
+# Un medio que publica su fecha de la manera más inequívoca posible
+# era justo el que no se podía leer.
+_FECHA_ISO_EN_TEXTO = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
 
 # "17/07/2026" y "17-07-2026" — día primero, que es como escribe la
 # prensa en español. Se exige un año de cuatro cifras para no casar
@@ -186,8 +198,45 @@ _FECHA_NUMERICA_ES = re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b")
 # NO quedarse con la primera fecha que aparezca en la página (que
 # podría ser la de otra noticia de la barra lateral).
 _ANTES_DE_LA_FECHA = re.compile(
-    r"(publicad[oa]|publicado el|fecha de publicaci[oó]n|actualizad[oa]\s+el"
-    r"|escrito por|publi[ée]\s+le|published)", re.IGNORECASE)
+    r"(publicad[oa]|fecha de publicaci[oó]n|actualizad[oa]\s+el"
+    r"|escrito por|published|posted\s+on"
+    # Francés (Haití). "le" va opcional: muchos medios escriben
+    # "Publié 4 novembre 2026", sin artículo.
+    r"|publi[ée]e?(?:\s+le)?|paru(?:\s+le)?|mis\s+en\s+ligne)",
+    re.IGNORECASE)
+
+# Microformato de fecha: <abbr class="published" title="2026-11-05T…">
+# o <span class="date" title="…">. Es lo que emite SPIP, el gestor con
+# el que está hecho AlterPresse, y no lo cubría ninguno de los
+# patrones de metadatos: no es un <meta>, ni un <time datetime>, ni
+# JSON-LD. Dos noticias haitianas del reporte del 10-nov salieron "sin
+# fecha legible" por esto.
+_PATRONES_MICROFORMATO = (
+    re.compile(
+        r'class=["\'][^"\']*\b(?:published|date[a-z-]*)\b[^"\']*["\']'
+        r'[^>]*title=["\']([^"\']+)["\']', re.IGNORECASE),
+    re.compile(
+        r'title=["\']([^"\']+)["\'][^>]*'
+        r'class=["\'][^"\']*\b(?:published|date[a-z-]*)\b[^"\']*["\']',
+        re.IGNORECASE),
+)
+
+_ETIQUETAS = re.compile(r"<[^>]+>")
+
+
+def _a_texto_plano(html: str) -> str:
+    """
+    Quita las etiquetas y decodifica las entidades, para que la
+    búsqueda de la fecha vea lo mismo que ve una persona.
+
+    Hace falta por dos motivos reales, los dos vistos en las páginas
+    haitianas: "Publié&nbsp;le" no casaba con el patrón porque la
+    entidad no estaba decodificada, y "Publié <span>le</span> 4
+    novembre" tampoco, porque había una etiqueta en medio de la frase.
+    """
+    plano = _ETIQUETAS.sub(" ", html or "")
+    plano = unescape(plano)
+    return re.sub(r"[\s ]+", " ", plano)
 
 
 def _parsear_iso(texto: str) -> Optional[datetime]:
@@ -277,8 +326,20 @@ def fecha_publicada_en_html(html: str) -> Optional[datetime]:
     # dice claramente cuándo publicó, la respuesta correcta es "no se
     # pudo verificar", no una conjetura con aspecto de dato.
     cuerpo = html[:BYTES_MAXIMOS]
-    for marca in _ANTES_DE_LA_FECHA.finditer(cuerpo):
-        cercano = cuerpo[marca.start():marca.start() + 200]
+
+    # Microformato antes que el texto corrido: un title="2026-11-05T…"
+    # es un dato, no una conjetura.
+    for patron in _PATRONES_MICROFORMATO:
+        for match in patron.finditer(cuerpo):
+            fecha = _parsear_iso(match.group(1)) or _fecha_en_texto(match.group(1))
+            if fecha is not None:
+                return fecha
+
+    # El texto, ya sin etiquetas ni entidades, para que "Publié&nbsp;le"
+    # y "Publié <span>le</span>" se lean como lo que son.
+    plano = _a_texto_plano(cuerpo)
+    for marca in _ANTES_DE_LA_FECHA.finditer(plano):
+        cercano = plano[marca.start():marca.start() + 200]
         fecha = _fecha_en_texto(cercano)
         if fecha is not None:
             return fecha
@@ -301,6 +362,17 @@ def _fecha_en_texto(texto: str) -> Optional[datetime]:
             try:
                 return datetime(int(anio), mes, int(dia),
                                 23, 59, tzinfo=timezone.utc)
+            except ValueError:
+                pass
+
+    # ISO antes que el formato día-primero: "2026-11-03" es inequívoco
+    # y "03/11/2026" no lo sería si el medio escribiera a la inglesa.
+    match = _FECHA_ISO_EN_TEXTO.search(texto)
+    if match:
+        anio, mes, dia = (int(x) for x in match.groups())
+        if 1 <= mes <= 12 and 1 <= dia <= 31:
+            try:
+                return datetime(anio, mes, dia, 23, 59, tzinfo=timezone.utc)
             except ValueError:
                 pass
 
