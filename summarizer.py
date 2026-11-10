@@ -532,7 +532,32 @@ def _puntuar_lote(
         f"migración laboral y programas de empleo temporal. Una "
         f"noticia sobre jóvenes que no logran entrar al mercado "
         f"laboral de {pais} va con 2 o 3, no con 1: describe quién "
-        f"queda fuera del sistema.\n\n"
+        f"queda fuera del sistema.\n"
+        f"EL LÍMITE de esta regla: lo que cuenta es quién queda FUERA "
+        f"del empleo o de la cobertura, no cualquier asunto del mundo "
+        f"del trabajo. NO entran, y van con 1: la dificultad de las "
+        f"empresas o de un sector para encontrar personal, los tiempos "
+        f"de traslado y el tráfico, la productividad, el clima "
+        f"laboral o las expectativas salariales de quien busca "
+        f"empleo. Describen las condiciones del negocio o la logística "
+        f"de la ciudad, no el acceso de las personas a la protección "
+        f"social.\n\n"
+        f"CONFLICTO Y EXIGENCIA — es el tema, y NO hace falta que "
+        f"nadie anuncie nada. Una huelga, un paro, una marcha, una "
+        f"demanda sindical, una denuncia de desfinanciamiento, la "
+        f"deuda del Estado con la institución de seguridad social, un "
+        f"litigio o una disputa en el legislativo sobre pensiones, "
+        f"salud o salarios van con 3 cuando lo que está en disputa es "
+        f"la protección social de {pais}.\n"
+        f"«Protesta, no anuncia medida», «demanda de servicio, sin "
+        f"política concreta», «no es un comunicado oficial» y «no hay "
+        f"medida concreta» NO son motivos válidos de descarte aquí, "
+        f"igual que no lo son para los datos de cobertura. Lo que "
+        f"decide es SOBRE QUÉ se reclama, no si alguien respondió ya. "
+        f"Un boletín que solo recoge anuncios describe un sistema "
+        f"donde nada se discute, y esa es una imagen falsa de "
+        f"justamente lo que la analista monitorea: la presión sobre el "
+        f"sistema es la mitad de la historia.\n\n"
         f"COMUNICADOS OFICIALES DEL ESTADO — al menos 2. Un anuncio del "
         f"Congreso, de un ministerio o de la institución de seguridad "
         f"social de {pais} sobre un asunto del boletín vale 2 aunque "
@@ -580,7 +605,14 @@ def _puntuar_lote(
         f"{pais}, no la des por buena porque el tema encaje: un medio "
         f"internacional cubriendo la reforma de OTRO país produce "
         f"titulares perfectos para este boletín y no corresponden. Sin "
-        f"una señal de que es de {pais}, ponle 0.\n\n"
+        f"una señal de que es de {pais}, ponle 0.\n"
+        f"- Si NO reconoces una institución, no supongas que es "
+        f"privada ni una ONG. Muchos organismos públicos de {pais} se "
+        f"llaman de formas que pueden no sonarte —fondos, institutos, "
+        f"oficinas, caisses— y bajar la nota por esa suposición "
+        f"descarta programas estatales reales. Ante la duda sobre "
+        f"quién aplica una medida, puntúa por lo que la medida ES, no "
+        f"por tu conjetura sobre quién está detrás.\n\n"
         f"REPETICIONES. Si varias noticias cubren EL MISMO hecho —el "
         f"mismo anuncio, el mismo foro, la misma reforma— quédate con "
         f"la más completa y puntúa las demás con 1, poniendo como "
@@ -770,8 +802,8 @@ def procesar_pais(
         )
         # La cuarta rama, la única que cambia SI alguien juzgó.
         ramas.append("editor_sin_respuesta_publicado_sin_revisar")
-        seleccion = [dict(n, nota=None, razon="sin revisar") for n in aceptadas[:n_noticias]]
-        descartadas = []
+        aprobadas = [dict(n, nota=None, razon="sin revisar") for n in aceptadas]
+        puntuadas, sin_puntuar, repetidas = [], [], []
     else:
         puntuadas = []
         sin_puntuar = []
@@ -830,18 +862,6 @@ def procesar_pais(
                      if n["nota"] >= NOTA_MINIMA_PARA_PUBLICAR]
         aprobadas, repetidas = memoria.filtrar_ya_publicadas(aprobadas)
 
-        seleccion = aprobadas[:n_noticias]
-
-        # Las repetidas ya traen su propio motivo, así que se excluyen
-        # de la lista general para que no salgan dos veces en el panel.
-        links_repetidos = {r.get("link") for r in repetidas if r.get("link")}
-        descartadas = [
-            {"titulo": n["titulo"], "fuente": n.get("fuente", ""),
-             "link": n.get("link", ""), "nota": n["nota"], "razon": n["razon"]}
-            for n in puntuadas
-            if n not in seleccion and n.get("link") not in links_repetidos
-        ] + sin_puntuar + repetidas
-
     # VERIFICACIÓN CONTRA LA PÁGINA DEL MEDIO (1-nov-2026).
     #
     # Hasta aquí todo lo que el sistema sabe de la fecha y del enlace se
@@ -854,16 +874,56 @@ def procesar_pais(
     # país), en paralelo y con tiempo máximo corto. Ante cualquier fallo
     # la noticia se queda como estaba: verificar no puede convertirse en
     # una forma nueva de perder noticias.
-    if seleccion:
-        # Si la búsqueda amplió la ventana a dos semanas (rama 2), el
-        # límite legítimo de esta corrida son 14 días, no 10: verificar
-        # contra 10 descartaría noticias que el propio sistema aceptó a
-        # propósito.
-        limite_dias = 14 if "ventana_ampliada_a_2_semanas" in ramas \
-            else DIAS_MAXIMOS_ANTIGUEDAD
-        seleccion, fuera_de_fecha = verificar_noticias(
-            seleccion, limite_dias, pais=pais)
-        descartadas = descartadas + fuera_de_fecha
+    #
+    # LA VERIFICACIÓN YA NO DEJA HUECOS (9-nov-2026). Antes se cortaba
+    # al cupo y DESPUÉS se verificaba, así que una noticia tumbada por
+    # fecha falsa se llevaba su plaza con ella. Pasó ese mismo día en
+    # República Dominicana: cinco seleccionadas, la de Revista Mercado
+    # resultó ser del 11 de septiembre —el buscador la daba como «hace
+    # 11 horas»— y el país salió con cuatro noticias en vez de cinco,
+    # teniendo tres más aprobadas esperando.
+    #
+    # Es el mismo error de orden que ya se había corregido para la
+    # memoria unas horas antes: filtrar después de recortar deja
+    # agujeros. Ahora se verifica por tandas y se rellena con las
+    # siguientes aprobadas hasta llegar al cupo o agotarlas.
+    limite_dias = 14 if "ventana_ampliada_a_2_semanas" in ramas \
+        else DIAS_MAXIMOS_ANTIGUEDAD
+
+    pendientes = list(aprobadas)
+    seleccion: List[Dict] = []
+    fuera_de_fecha: List[Dict] = []
+    while pendientes and len(seleccion) < n_noticias:
+        tanda = pendientes[:n_noticias - len(seleccion)]
+        pendientes = pendientes[len(tanda):]
+        verificadas, rechazadas = verificar_noticias(
+            tanda, limite_dias, pais=pais)
+        seleccion.extend(verificadas)
+        fuera_de_fecha.extend(rechazadas)
+
+    # El panel de descartadas se arma AL FINAL, cuando la selección ya
+    # es definitiva: así cada noticia aparece una sola vez y con el
+    # motivo que de verdad la dejó fuera.
+    #
+    # Se compara por ENLACE y no por igualdad de diccionarios:
+    # verificar_noticias devuelve COPIAS con campos añadidos, así que
+    # `n not in seleccion` daba siempre verdadero y la noticia
+    # publicada aparecía además en el panel de descartes.
+    def _clave(noticia: Dict) -> str:
+        return noticia.get("link") or noticia.get("titulo", "")
+
+    ya_resueltas = (
+        {_clave(n) for n in seleccion}
+        | {_clave(n) for n in fuera_de_fecha}
+        | {_clave(n) for n in repetidas}
+    )
+    descartadas = [
+        {"titulo": n["titulo"], "fuente": n.get("fuente", ""),
+         "link": n.get("link", ""), "nota": n.get("nota"),
+         "razon": n.get("razon", "")}
+        for n in puntuadas
+        if _clave(n) not in ya_resueltas
+    ] + sin_puntuar + repetidas + fuera_de_fecha
 
     if not seleccion:
         return {"pais": pais, "noticias": [], "sin_resultados": True,

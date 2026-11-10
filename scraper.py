@@ -514,6 +514,7 @@ TERMINOS_TEMATICOS_FRANCES = [
     "ONA",               # Office National d'Assurance Vieillesse
     "OFATMA",            # seguro de accidentes, enfermedad y maternidad
     "MAST",              # Ministère des Affaires Sociales et du Travail
+    "FAES",              # Fonds d'Assistance Économique et Sociale
 ]
 
 # Palabras clave de relevancia en francés, para que _es_relevante_al_tema
