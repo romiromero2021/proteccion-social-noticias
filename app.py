@@ -525,6 +525,8 @@ if st.session_state.reportes:
                         with st.expander(t("ver_marcado_de_fecha", idioma)):
                             st.code(noticia["muestra_de_fecha"], language=None)
                     st.write(noticia["resumen"])
+                    if noticia.get("es_extracto_no_resumen"):
+                        st.caption(t("extracto_no_resumen", idioma))
                     if noticia.get("nota") is not None:
                         st.caption(t("relevancia", idioma, nota=noticia["nota"], razon=noticia.get("razon", "")))
                     if noticia.get("link"):

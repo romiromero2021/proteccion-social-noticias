@@ -864,10 +864,47 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
         return {"resumen": texto, "error_detalle": None}
 
     # Fallaron todos los modelos e intentos: respaldo con el snippet.
+    #
+    # PERO NO CUALQUIER SNIPPET (10-nov-2026). El quinto reporte del
+    # día publicó, como resumen de una nota de Le Nouvelliste sobre el
+    # seguro de desempleo, la frase «Toutes les nouvelles fiables sur
+    # Haïti.» — el lema del sitio. El buscador entrega eso como
+    # extracto cuando no logra extraer nada del artículo, y el
+    # respaldo lo copiaba tal cual.
+    #
+    # Un lema no es un resumen equivocado: es un resumen de OTRA cosa,
+    # y en un boletín que circula parece que el sistema leyó el
+    # artículo y entendió eso. El título, en cambio, siempre habla del
+    # artículo.
     return {
-        "resumen": snippet or "Resumen no disponible.",
+        "resumen": (snippet if _extracto_sirve_de_resumen(snippet, titulo)
+                    else (titulo or "Resumen no disponible.")),
         "error_detalle": error,
+        "es_extracto_no_resumen": True,
     }
+
+
+_PALABRA = re.compile(r"[\wÀ-ÿ]{4,}", re.UNICODE)
+LARGO_SOSPECHOSO = 70
+PALABRAS_EN_COMUN_MINIMAS = 2
+
+
+def _extracto_sirve_de_resumen(snippet: str, titulo: str) -> bool:
+    """
+    ¿El extracto habla de ESTE artículo, o es texto de la portada?
+
+    Un lema de sitio es corto y no comparte casi nada con el titular.
+    Se exige las dos cosas para no tirar extractos legítimamente
+    breves: «El IMSS registró 571 277 empleos formales» es corto y
+    comparte media frase con su título.
+    """
+    if not snippet:
+        return False
+    if len(snippet) > LARGO_SOSPECHOSO:
+        return True
+    del_titulo = {p.lower() for p in _PALABRA.findall(titulo or "")}
+    del_extracto = {p.lower() for p in _PALABRA.findall(snippet)}
+    return len(del_titulo & del_extracto) >= PALABRAS_EN_COMUN_MINIMAS
 
 
 def seleccionar_top_n(noticias: List[Dict], n: int = 3) -> List[Dict]:
@@ -1115,6 +1152,11 @@ def procesar_pais(
             # legible). La interfaz lo señala.
             "fecha_verificada": noticia.get("_fecha_verificada", False),
             "motivo_sin_verificar": noticia.get("_motivo_sin_verificar", ""),
+            # El modelo no resumió y esto es el extracto del buscador.
+            # Se dice en el documento: un extracto y un resumen no son
+            # lo mismo y no pueden presentarse igual.
+            "es_extracto_no_resumen": resultado.get(
+                "es_extracto_no_resumen", False),
             # Diagnóstico para arreglar el lector de fechas con el
             # marcado real delante. Se muestra en el panel de la app y
             # NO se escribe en el Word: no es información del boletín.
@@ -1238,6 +1280,46 @@ _ETIQUETA_RAMA_DOC = {
 }
 
 
+def _agregar_notas_de_proceso(doc: Document, datos_pais: Dict) -> None:
+    """
+    Lo que le pasó a la máquina mientras armaba esta sección: los
+    desvíos de la búsqueda y los fallos del modelo.
+
+    Va en el Word, no solo en la pantalla, porque el Word es el
+    archivo que circula: una salvedad que vive solo en la aplicación
+    no existe para quien recibe el documento. Y va también en los
+    países vacíos, que son los que más necesitan explicarse.
+
+    LOS FALLOS DEL MODELO NO SE DECÍAN EN NINGUNA PARTE
+    (10-nov-2026). `errores_llm` se recogía desde hacía semanas y se
+    devolvía en el reporte, pero el documento nunca lo escribía. El
+    quinto reporte del día salió con varios "resúmenes" que eran el
+    extracto crudo del buscador —uno de ellos, el lema de Le
+    Nouvelliste— porque Groq había dejado de responder, y el documento
+    los presentaba exactamente igual que a los demás.
+    """
+    avisos = [_ETIQUETA_RAMA_DOC[r] for r in datos_pais.get("ramas", [])
+              if r in _ETIQUETA_RAMA_DOC]
+    if avisos:
+        p_rama = doc.add_paragraph()
+        rama_run = p_rama.add_run("Nota sobre esta búsqueda: " + " ".join(avisos))
+        rama_run.font.size = Pt(9)
+        rama_run.font.italic = True
+        rama_run.font.color.rgb = COLOR_AVISO
+
+    fallos = datos_pais.get("errores_llm") or []
+    if fallos:
+        p_fallo = doc.add_paragraph()
+        fallo_run = p_fallo.add_run(
+            f"Aviso técnico: el modelo de lenguaje falló en "
+            f"{len(fallos)} de las llamadas de esta sección. Donde no "
+            f"pudo resumir se muestra el extracto del buscador, "
+            f"señalado como tal.")
+        fallo_run.font.size = Pt(9)
+        fallo_run.font.italic = True
+        fallo_run.font.color.rgb = COLOR_AVISO
+
+
 def _agregar_pais(doc: Document, datos_pais: Dict):
     pais = datos_pais["pais"]
 
@@ -1265,6 +1347,15 @@ def _agregar_pais(doc: Document, datos_pais: Dict):
                 f"ninguna trataba de programas de protección social con "
                 f"suficiente centralidad como para incluirla."
             )
+        elif "el_buscador_dijo_sin_resultados" in datos_pais.get("ramas", []):
+            # No es lo mismo "miramos y no había" que "no pudimos
+            # mirar". El texto de abajo afirma lo primero; aquí solo
+            # consta lo segundo.
+            texto_vacio = (
+                "El buscador no devolvió ningún resultado para este país en "
+                "esta consulta. No quiere decir que no haya habido noticias: "
+                "quiere decir que no llegó ninguna."
+            )
         else:
             texto_vacio = (
                 "No se encontraron noticias relevantes sobre programas de "
@@ -1273,6 +1364,20 @@ def _agregar_pais(doc: Document, datos_pais: Dict):
         run_vacio = p.add_run(texto_vacio)
         run_vacio.font.italic = True
         run_vacio.font.color.rgb = COLOR_GRIS
+        # UN PAÍS VACÍO ES EL QUE MÁS NECESITA EXPLICARSE (10-nov-2026).
+        #
+        # Los desvíos y los fallos del modelo se escribían solo en los
+        # países CON noticias: el camino de arriba devolvía antes de
+        # llegar a ellos. Así que el único país del que no se decía
+        # nada era justamente aquel del que no se sabe nada.
+        #
+        # El quinto reporte del día lo enseñó: Cuba y Honduras salieron
+        # con "No se encontraron noticias relevantes sobre programas de
+        # protección social", que es una afirmación sobre el mundo —y
+        # la analista la va a leer como tal— cuando lo que de verdad
+        # había pasado es que el buscador no devolvió nada. Son dos
+        # hechos distintos y el documento los contaba igual.
+        _agregar_notas_de_proceso(doc, datos_pais)
         doc.add_paragraph()
         return
 
@@ -1290,14 +1395,7 @@ def _agregar_pais(doc: Document, datos_pais: Dict):
     # Es el mismo principio que el aviso de fecha sin verificar: una
     # salvedad que vive solo en la pantalla no existe para quien
     # recibe el archivo.
-    avisos = [_ETIQUETA_RAMA_DOC[r] for r in datos_pais.get("ramas", [])
-              if r in _ETIQUETA_RAMA_DOC]
-    if avisos:
-        p_rama = doc.add_paragraph()
-        rama_run = p_rama.add_run("Nota sobre esta búsqueda: " + " ".join(avisos))
-        rama_run.font.size = Pt(9)
-        rama_run.font.italic = True
-        rama_run.font.color.rgb = COLOR_AVISO
+    _agregar_notas_de_proceso(doc, datos_pais)
 
     for idx, noticia in enumerate(datos_pais["noticias"], start=1):
         sub = doc.add_heading(level=2)
@@ -1329,6 +1427,18 @@ def _agregar_pais(doc: Document, datos_pais: Dict):
 
         resumen = doc.add_paragraph()
         resumen.add_run(noticia["resumen"]).font.size = Pt(11)
+
+        # Un extracto del buscador y un resumen leído del artículo no
+        # son lo mismo, y presentarlos igual es la peor parte de un
+        # fallo del modelo: el documento no miente en el texto, miente
+        # en lo que ese texto aparenta ser.
+        if noticia.get("es_extracto_no_resumen"):
+            marca = resumen.add_run(
+                "   [extracto del buscador: el modelo no pudo resumir "
+                "esta noticia]")
+            marca.font.size = Pt(9)
+            marca.font.italic = True
+            marca.font.color.rgb = COLOR_AVISO
 
         if noticia.get("link"):
             link_p = doc.add_paragraph()
