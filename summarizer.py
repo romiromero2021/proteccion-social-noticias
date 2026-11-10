@@ -337,6 +337,65 @@ def _llamar_groq_con_reintentos(
 # Nota mínima para que una noticia se publique.
 NOTA_MINIMA_PARA_PUBLICAR = 2
 
+# ---------------------------------------------------------------------------
+# SELLO DE VERSIÓN DEL CÓDIGO
+# ---------------------------------------------------------------------------
+# POR QUÉ EXISTE (10-nov-2026). Tres veces en dos días hubo que deducir,
+# a partir del contenido de un reporte, si la versión desplegada en
+# Streamlit era la nueva o la vieja: si las fechas haitianas fallaban
+# porque el lector de fechas está mal o porque todavía no se había
+# subido. Deducirlo lleva veinte minutos, da respuestas contradictorias
+# —en el reporte del 10-nov por la tarde, una señal decía "código
+# nuevo" y otra "código viejo"— y el diagnóstico de una avería real
+# queda esperando mientras tanto.
+#
+# La huella se CALCULA del contenido de los archivos, no se escribe a
+# mano: una versión que hay que acordarse de subir de número es una
+# versión que miente el día que uno se olvida. Cada módulo lleva su
+# propia marca, así que una subida incompleta no solo se detecta: dice
+# cuál archivo quedó atrás.
+#
+# Se normalizan los finales de línea antes de medir, porque GitHub y
+# Streamlit pueden reescribirlos y eso no es un cambio de código.
+MODULOS_CON_SELLO = ("app.py", "scraper.py", "summarizer.py",
+                     "verificacion.py", "memoria.py")
+
+
+def _huella_de_archivo(nombre: str) -> str:
+    """Marca corta de un módulo. Nunca lanza: sin sello se sigue."""
+    import hashlib
+    import os
+    ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), nombre)
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            texto = f.read()
+    except OSError:
+        return "ausente"
+    normalizado = "\n".join(linea.rstrip() for linea in texto.splitlines())
+    return hashlib.sha256(normalizado.encode("utf-8")).hexdigest()[:4]
+
+
+def huellas_de_modulos() -> Dict[str, str]:
+    return {nombre: _huella_de_archivo(nombre) for nombre in MODULOS_CON_SELLO}
+
+
+def sello_de_version() -> str:
+    """
+    Una línea legible: la huella del conjunto y la de cada módulo.
+
+    Para saber si una subida llegó, se compara esta línea con la del
+    reporte anterior. Si el conjunto cambió, cambió algo; si además se
+    ve cuál módulo cambió, se sabe qué llegó y qué no.
+    """
+    import hashlib
+    porpartes = huellas_de_modulos()
+    conjunto = hashlib.sha256(
+        "".join(f"{k}:{v}" for k, v in sorted(porpartes.items())).encode()
+    ).hexdigest()[:6]
+    detalle = " ".join(f"{k.replace('.py', '')} {v}"
+                       for k, v in porpartes.items())
+    return f"código {conjunto} · {detalle}"
+
 # Tope de candidatas que se mandan a puntuar por país, para acotar el
 # tamaño del mensaje.
 MAX_CANDIDATAS_A_PUNTUAR = 14
@@ -574,7 +633,17 @@ def _puntuar_lote(
         f"riesgo al que el sistema debería responder.\n"
         f"La productividad SOLA, como indicador de la economía o de "
         f"una empresa, no entra; la productividad junto a la salud o "
-        f"las condiciones de quien trabaja, sí.\n\n"
+        f"las condiciones de quien trabaja, sí.\n"
+        f"Y esta regla NO abre la puerta al traslado al trabajo. El "
+        f"tiempo que se pierde en el tráfico ocupa horas de descanso y "
+        f"de familia, pero es un problema de transporte y de ciudad, "
+        f"no un riesgo del puesto de trabajo ni una rama de la "
+        f"seguridad social: «los trabajadores pierden tres horas "
+        f"diarias en traslados» va con 1, aquí y en la regla de acceso "
+        f"al empleo. Lo que esta regla cubre es lo que el TRABAJO le "
+        f"hace al cuerpo —la jornada que se alarga, el turno sin "
+        f"descanso, el calor en el sitio de trabajo, la enfermedad que "
+        f"se contrae ahí—, no todo lo que desgasta a quien trabaja.\n\n"
         f"CONFLICTO Y EXIGENCIA — es el tema, y NO hace falta que "
         f"nadie anuncie nada. Una huelga, un paro, una marcha, una "
         f"demanda sindical, una denuncia de desfinanciamiento, la "
@@ -606,7 +675,17 @@ def _puntuar_lote(
         f"sindicato, una cámara empresarial, una ONG o un partido NO "
         f"tiene suelo: se puntúa por lo que diga, como cualquier otra "
         f"noticia. Y la palabra «Comunicado» en el titular no activa "
-        f"nada por sí sola.\n\n"
+        f"nada por sí sola.\n"
+        f"EL SUELO NO CUBRE LA AUTOPROMOCIÓN. Que la institución "
+        f"prometa tratar mejor a la gente —«atención digna para "
+        f"nuestros pensionados», «un servicio más ágil, cercano y con "
+        f"calidez», «seguimos trabajando por usted»— no es una medida, "
+        f"ni una prestación, ni una cifra, ni una posición de política: "
+        f"es imagen, y va con 1 aunque la publique el propio "
+        f"organismo público en su sitio. Para merecer el 2 el "
+        f"comunicado tiene que decir QUÉ cambia: un trámite que se "
+        f"elimina, un plazo que se acorta, una ventanilla que abre, un "
+        f"monto, una fecha.\n\n"
         f"ACTOS INTERNOS DE UNA ORGANIZACIÓN — van con 1. Una asamblea, "
         f"un congreso ordinario, una toma de posesión, una "
         f"juramentación, un nombramiento, un aniversario, un homenaje o "
@@ -661,7 +740,22 @@ def _puntuar_lote(
         f"razón \"repite la noticia N\". Aunque sean artículos "
         f"distintos y de días distintos, al lector no le sirve leer "
         f"cinco versiones del mismo hecho: prefiere variedad de temas "
-        f"dentro del país.\n\n"
+        f"dentro del país.\n"
+        f"LA MISMA FUENTE DE DATOS TAMBIÉN ES REPETICIÓN, y es la que "
+        f"se escapa. Dos notas que comentan la MISMA encuesta, el "
+        f"mismo estudio, el mismo informe o la misma cifra oficial son "
+        f"una sola noticia, aunque los titulares no se parezcan en "
+        f"nada y aunque cada medio destaque un ángulo distinto. "
+        f"Compara las CIFRAS y la fuente del dato, no las palabras del "
+        f"titular: «el desempleo aumenta por cuatro factores: 154 736 "
+        f"personas» y «el país registra 6,5 % de desempleo, 155 000 "
+        f"personas, y una brecha entre hombres y mujeres» son el mismo "
+        f"trimestre del mismo instituto de estadística contado dos "
+        f"veces. Igual «trabajadores pierden 3 horas y 10 minutos en "
+        f"traslados, según estudio regional» y «el país enfrenta el "
+        f"mayor tiempo de traslado de la región, según estudio»: un "
+        f"solo estudio. Quédate con la más completa y pon 1 a la otra, "
+        f"con la razón \"repite la noticia N\".\n\n"
         f"Sé exigente: es mejor un boletín corto y bueno que uno largo "
         f"con relleno. No hay ningún cupo que llenar.\n\n"
         f"Responde SOLO con una línea por noticia, sin nada más, en este "
@@ -715,6 +809,18 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
         f"Extracto original: {snippet}\n\n"
         "Instrucciones importantes:\n"
         "- No inventes datos, cifras ni detalles que no estén en el título o el extracto.\n"
+        "- **NO DESARROLLES SIGLAS.** Si el material dice «FAES», «INSS», "
+        "«CSS» o «MIDES» y no escribe en ninguna parte qué significan, "
+        "escribe la sigla tal cual y nada más. Completar el nombre de "
+        "memoria parece un servicio al lector y es una invención: el 10 "
+        "de noviembre dos noticias haitianas seguidas llamaron al mismo "
+        "organismo «Fondo de Asistencia Económica y Social» y «Fondo de "
+        "Asistencia de Emergencia y Seguridad», y una de las dos estaba "
+        "mal. Una sigla sin desarrollar no le quita nada al resumen; un "
+        "nombre inventado le quita la credibilidad al boletín entero.\n"
+        "- Tampoco traduzcas al español el nombre propio de una "
+        "institución si el material no lo trae traducido: déjalo como "
+        "viene.\n"
         "- **El largo lo manda el material, no el máximo.** Si el extracto "
         "trae un solo hecho, una frase es la respuesta correcta. No rellenes "
         "hasta las tres frases.\n"
@@ -1264,6 +1370,15 @@ def generar_documento_word(reportes_por_pais: List[Dict]) -> io.BytesIO:
 
     for datos_pais in reportes_por_pais:
         _agregar_pais(doc, datos_pais)
+
+    # Sello de versión, al final y en letra chica: no estorba a quien
+    # lee el boletín y contesta en un segundo la pregunta "¿esta
+    # consulta usó el código que subí?". Ver sello_de_version().
+    pie = doc.add_paragraph()
+    pie.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    marca = pie.add_run(sello_de_version())
+    marca.font.size = Pt(7)
+    marca.font.color.rgb = COLOR_GRIS
 
     buffer = io.BytesIO()
     doc.save(buffer)

@@ -162,6 +162,10 @@ TEXTOS: Dict[str, Dict[str, str]] = {
         "es": "Modelo de IA en uso: `{modelo}`",
         "en": "AI model in use: `{modelo}`",
     },
+    "version_codigo": {
+        "es": "Versión del código: `{sello}`",
+        "en": "Code version: `{sello}`",
+    },
     "faltan_claves": {
         "es": ("⚠️ Ingresa tu **SerpAPI Key** y tu **Groq API Key** en el panel "
                "lateral izquierdo para poder generar el reporte."),

@@ -30,7 +30,8 @@ from idiomas import (IDIOMAS, IDIOMA_POR_DEFECTO, t, datos_de_espera,
 
 from scraper import buscar_noticias_pais, PAISES, TERMINOS_TEMATICOS
 from summarizer import (procesar_pais, generar_documento_word, modelo_en_uso,
-                        configurar_base_url, es_error_de_bloqueo_de_red)
+                        configurar_base_url, es_error_de_bloqueo_de_red,
+                        sello_de_version)
 import cache
 import memoria
 
@@ -191,6 +192,13 @@ with st.sidebar:
     st.caption(", ".join(nombre_pais(p, idioma) for p in PAISES))
     st.caption(t("terminos_busqueda", idioma, terminos=", ".join(TERMINOS_TEMATICOS)))
     st.caption(t("modelo_en_uso", idioma, modelo=modelo_en_uso()))
+
+    # SELLO DE VERSIÓN (10-nov-2026). Se muestra aquí además de en el
+    # Word para poder comprobar un despliegue sin gastar una consulta:
+    # tras subir archivos a GitHub basta recargar la página y comparar
+    # la huella con la que acompaña a los archivos. Ver
+    # summarizer.sello_de_version().
+    st.caption(t("version_codigo", idioma, sello=sello_de_version()))
 
 claves_listas = bool(serpapi_key) and bool(groq_key)
 

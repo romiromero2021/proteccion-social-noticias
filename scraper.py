@@ -1196,6 +1196,26 @@ _RUTAS_DE_INDICE = (
     "/seccion/", "/secciones/", "/section/",
     "/vertodos/", "/archivo/", "/archives/",
     "/autor/", "/author/", "/buscar/", "/search",
+    # CARTELERA (10-nov-2026). El reporte del 10-nov llevó a Cuba
+    # "Cuba Transformación debate las reformas y la protección social",
+    # de 14ymedio.com/cartelera/. No es una noticia: es el anuncio de
+    # que habrá un programa donde cuatro personas van a conversar del
+    # tema. El titular es perfecto para el boletín y no hay ningún
+    # hecho detrás, así que el editor no tiene con qué rechazarlo —la
+    # decisión es objetiva y por la forma de la URL, que es donde
+    # corresponde.
+    #
+    # SOLO ESTAS DOS, Y A PROPÓSITO. El primer intento agregó también
+    # "/agenda/", "/eventos/", "/evento/" y "/convocatorias/". Está
+    # mal: esto es un descarte DURO y lo que se pierde aquí no deja
+    # rastro en ninguna parte. "Convocatoria" es justamente como los
+    # ministerios anuncian la apertura de un programa social —una
+    # convocatoria de becas o de un padrón ES la noticia— y "agenda"
+    # en la prensa de la región nombra tanto una cartelera como la
+    # agenda legislativa. Un listado de más cuesta una noticia de
+    # relleno que el editor puede bajar a 1; un artículo bloqueado en
+    # duro no se recupera y nadie se entera.
+    "/cartelera/", "/programacion/",
 )
 
 
@@ -2088,15 +2108,29 @@ def _extraer_fuente(item: Dict) -> str:
     """
     source = item.get("source")
     if isinstance(source, dict) and source.get("name"):
-        return source["name"]
+        return _limpiar_nombre_de_fuente(source["name"])
     if isinstance(source, str) and source.strip():
-        return source
+        return _limpiar_nombre_de_fuente(source)
 
     link = item.get("link") or ""
     dominio = urlparse(link).netloc.lower()
     if dominio.startswith("www."):
         dominio = dominio[4:]
     return dominio or "Fuente desconocida"
+
+
+# Basura de puntuación y de maquetación que SerpAPI arrastra en el
+# nombre del medio. El reporte del 10-nov-2026 mostró "Fuente: -
+# Rezo Nòdwès" en Haití: el guion viene del propio título de la página
+# ("… - Rezo Nòdwès") y el buscador lo entregó como parte del nombre.
+# Es cosmético, pero el documento circula fuera de la unidad.
+_BASURA_AL_BORDE = " \t -–—·|,;:·•«»\"'"
+
+
+def _limpiar_nombre_de_fuente(nombre: str) -> str:
+    limpio = (nombre or "").strip().strip(_BASURA_AL_BORDE).strip()
+    # Un nombre que era solo puntuación no mejora por limpiarlo.
+    return limpio or (nombre or "").strip() or "Fuente desconocida"
 
 
 def _codigo_pais(pais: str) -> str:
