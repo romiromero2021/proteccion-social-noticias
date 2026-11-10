@@ -166,6 +166,10 @@ TEXTOS: Dict[str, Dict[str, str]] = {
         "es": "Versión del código: `{sello}`",
         "en": "Code version: `{sello}`",
     },
+    "ver_marcado_de_fecha": {
+        "es": "¿Por qué no se pudo leer la fecha? (marcado de la página)",
+        "en": "Why couldn't the date be read? (page markup)",
+    },
     "faltan_claves": {
         "es": ("⚠️ Ingresa tu **SerpAPI Key** y tu **Groq API Key** en el panel "
                "lateral izquierdo para poder generar el reporte."),

@@ -578,7 +578,16 @@ def _puntuar_lote(
         f"este mes».\n"
         f"Y si el propio titular dice «protección social», no "
         f"concluyas que le falta enfoque social: eso es exactamente "
-        f"lo que el boletín busca.\n\n"
+        f"lo que el boletín busca.\n"
+        f"«Becas, educación no es protección social» NO es un motivo "
+        f"válido de descarte, y es el error que más caro sale: una "
+        f"beca, un comedor escolar o una transferencia condicionada "
+        f"NO son «educación» para este boletín, son una prestación "
+        f"que usa la escuela como ventanilla. Van con 2 o 3 siempre. "
+        f"Si quien entrega el programa es el ministerio de desarrollo "
+        f"social —SEDESOL, MIDES, MIDIS y equivalentes— eso zanja la "
+        f"duda: es su cartera, no la de educación. «SEDESOL agilizará "
+        f"la firma de convenios de becas» es protección social.\n\n"
         f"COBERTURA, SUFICIENCIA Y EROSIÓN — también es el tema, y NO "
         f"hace falta que haya un anuncio. Un boletín de monitoreo "
         f"necesita las dos mitades: lo que el Estado ANUNCIA y lo que "
@@ -613,6 +622,17 @@ def _puntuar_lote(
         f"noticia sobre jóvenes que no logran entrar al mercado "
         f"laboral de {pais} va con 2 o 3, no con 1: describe quién "
         f"queda fuera del sistema.\n"
+        f"LOS PROGRAMAS DE TRABAJO EN EL EXTERIOR ENTRAN, y es el otro "
+        f"error caro. Cuando el Estado de {pais} gestiona el envío de "
+        f"trabajadores a otro país —cupos, convenios, contratación "
+        f"agrícola o temporal— eso es una política pública de empleo "
+        f"para quien no lo encuentra aquí, y va con 2 o 3. «Envío de "
+        f"trabajadores al exterior, no protección» y «programa de "
+        f"envío de trabajadores agrícolas, no protección directa» NO "
+        f"son motivos válidos de descarte. Distinto es la gestión "
+        f"migratoria o consular sin programa de empleo detrás "
+        f"—deportaciones, visados, trámites, una visita de la "
+        f"embajada—, que va con 1.\n"
         f"EL LÍMITE de esta regla: lo que cuenta es quién queda FUERA "
         f"del empleo o de la cobertura, no cualquier asunto del mundo "
         f"del trabajo. NO entran, y van con 1: la dificultad de las "
@@ -707,6 +727,16 @@ def _puntuar_lote(
         f"es que la actividad local no importe: es que en un boletín de "
         f"cinco noticias por país ocupa el lugar de algo que afecta a "
         f"todo el país.\n"
+        f"EL CASO INDIVIDUAL NO ES NOTICIA. Si el titular es la "
+        f"historia de UNA persona con nombre propio —«Kleiderson "
+        f"tendrá un mejor futuro gracias a la Beca Social», «Don "
+        f"Juanito, 40 años frente al IGSS»—, es un testimonio de "
+        f"difusión, no un hecho del sistema, y va con 1 aunque el "
+        f"programa del que habla sea de los que más le importan al "
+        f"boletín. Al analista le sirve cuántos reciben la beca, no "
+        f"quién. Sube a 2 o 3 solo si el caso viene con la cifra o la "
+        f"decisión detrás: «la beca llega a 40 000 estudiantes» sí, "
+        f"«así cambió la vida de un becario» no.\n"
         f"Señal clara de rutina: el titular dice que la institución "
         f"CONTINÚA, SIGUE o MANTIENE algo que ya venía haciendo. "
         f"«Puerto Barrios continúa conectando talento con "
@@ -1105,6 +1135,10 @@ def procesar_pais(
             # legible). La interfaz lo señala.
             "fecha_verificada": noticia.get("_fecha_verificada", False),
             "motivo_sin_verificar": noticia.get("_motivo_sin_verificar", ""),
+            # Diagnóstico para arreglar el lector de fechas con el
+            # marcado real delante. Se muestra en el panel de la app y
+            # NO se escribe en el Word: no es información del boletín.
+            "muestra_de_fecha": noticia.get("_muestra_de_fecha", ""),
             "link": noticia.get("link", ""),
             "resumen": resultado["resumen"],
             "nota": noticia.get("nota"),

@@ -517,6 +517,13 @@ if st.session_state.reportes:
                         _pie += ("  ·  fecha sin verificar"
                                  + (f" ({_motivo})" if _motivo else ""))
                     st.caption(_pie)
+                    # Marcado real de la página cuando la fecha no se
+                    # pudo leer. Está plegado para no estorbar la
+                    # lectura: solo se abre cuando hay que arreglar el
+                    # lector de fechas. Ver verificacion.muestra_de_fechas().
+                    if noticia.get("muestra_de_fecha"):
+                        with st.expander(t("ver_marcado_de_fecha", idioma)):
+                            st.code(noticia["muestra_de_fecha"], language=None)
                     st.write(noticia["resumen"])
                     if noticia.get("nota") is not None:
                         st.caption(t("relevancia", idioma, nota=noticia["nota"], razon=noticia.get("razon", "")))

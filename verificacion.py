@@ -411,9 +411,16 @@ def _valores_de_fecha(datos) -> List[str]:
 # UNA PETICIÓN POR NOTICIA: resuelve el redirector Y lee la fecha
 # ---------------------------------------------------------------------------
 
-def _consultar_pagina(link: str) -> Tuple[Optional[str], Optional[datetime], str]:
+def _consultar_pagina(
+    link: str,
+) -> Tuple[Optional[str], Optional[datetime], str, str]:
     """
-    Pide la página y devuelve (url_final, fecha_publicada, motivo).
+    Pide la página y devuelve (url_final, fecha_publicada, motivo, muestra).
+
+    `muestra` solo se llena cuando la fecha no se pudo leer: son los
+    pedazos del HTML que parecían una fecha, para poder arreglar el
+    lector mirando el marcado real. Va al panel, nunca al Word. Ver
+    muestra_de_fechas().
 
     `motivo` explica por qué NO se pudo verificar, para que el fallo
     quede dicho en vez de pasar en silencio:
@@ -442,10 +449,71 @@ def _consultar_pagina(link: str) -> Tuple[Optional[str], Optional[datetime], str
         except Exception:
             continue
     if html is None:
-        return None, None, "no respondió"
+        return None, None, "no respondió", ""
 
     fecha = fecha_publicada_en_html(html)
-    return url_final, fecha, "" if fecha else "sin fecha legible"
+    if fecha:
+        return url_final, fecha, "", ""
+    return url_final, None, "sin fecha legible", muestra_de_fechas(html)
+
+
+# ---------------------------------------------------------------------------
+# DIAGNÓSTICO: QUÉ TRAÍA LA PÁGINA QUE NO SE PUDO LEER
+# ---------------------------------------------------------------------------
+# POR QUÉ EXISTE (10-nov-2026). Las fechas de Le Nouvelliste y de
+# AlterPresse se arreglaron dos veces y las dos veces siguieron
+# saliendo como "sin fecha legible". El arreglo se escribió a partir
+# del marcado que yo SUPUSE que usaban esos sitios —el microformato de
+# SPIP, "Publié le" seguido de una fecha ISO— y acerté en la forma de
+# escribirlo pero no en lo que la página trae de verdad.
+#
+# El mensaje "sin fecha legible" no alcanza para arreglar nada: dice
+# que el lector falló, no qué había que leer. Así que ahora, cuando
+# falla, guarda una muestra de los pedazos de la página que parecen
+# fechas. Con eso el arreglo siguiente se hace mirando el marcado real
+# en vez de adivinándolo, y no cuesta otra corrida.
+#
+# La muestra se ve en el panel de la app, nunca en el documento Word:
+# es información de diagnóstico, no del boletín.
+_SENALES_DE_FECHA = re.compile(
+    r"(?:datetime\s*=|published|pubdate|dateline|article:published|"
+    r"date[-_]?post|post[-_]?date|publi[eé]|paru|mis\s+en\s+ligne|"
+    r"publicad|\d{4}-\d{2}-\d{2}|\d{1,2}\s+(?:janvier|février|mars|avril|"
+    r"mai|juin|juillet|août|septembre|octobre|novembre|décembre|enero|"
+    r"febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|"
+    r"noviembre|diciembre))",
+    re.IGNORECASE)
+
+LARGO_MUESTRA = 150
+MUESTRAS_MAXIMAS = 4
+
+
+def muestra_de_fechas(html: str, limite: int = 520) -> str:
+    """
+    Pedazos del HTML alrededor de lo que parece una fecha.
+
+    Nunca lanza y nunca crece: si algo sale mal devuelve "" y el
+    mensaje se queda como estaba. Es HTML público, no hay nada
+    sensible que filtrar, pero se recorta igual para que el panel
+    siga siendo legible.
+    """
+    try:
+        if not html:
+            return ""
+        trozos = []
+        for coincidencia in _SENALES_DE_FECHA.finditer(html):
+            inicio = max(0, coincidencia.start() - LARGO_MUESTRA // 3)
+            trozo = html[inicio:inicio + LARGO_MUESTRA]
+            trozo = re.sub(r"\s+", " ", trozo).strip()
+            if trozo and trozo not in trozos:
+                trozos.append(trozo)
+            if len(trozos) >= MUESTRAS_MAXIMAS:
+                break
+        if not trozos:
+            return "la página no trae nada que parezca una fecha"
+        return (" ⋯ ".join(trozos))[:limite]
+    except Exception:
+        return ""
 
 
 def verificar_noticias(
@@ -483,7 +551,8 @@ def verificar_noticias(
         days=dias_maximos + DIAS_DE_TOLERANCIA)
 
     publicables, rechazadas = [], []
-    for noticia, (url_final, fecha_real, motivo) in zip(noticias, resultados):
+    for noticia, (url_final, fecha_real, motivo, muestra) in zip(
+            noticias, resultados):
         verificada = dict(noticia)
 
         if url_final and not es_enlace_redirector(url_final):
@@ -514,6 +583,10 @@ def verificar_noticias(
             # presentarlas igual.
             verificada["_fecha_verificada"] = False
             verificada["_motivo_sin_verificar"] = motivo
+            # Para arreglar el lector de fechas con el marcado real a
+            # la vista. Solo al panel. Ver muestra_de_fechas().
+            if muestra:
+                verificada["_muestra_de_fecha"] = muestra
             publicables.append(verificada)
             continue
 
