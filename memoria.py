@@ -173,7 +173,28 @@ def inicializar_db() -> None:
                 anotado_en TEXT NOT NULL
             )
         """)
+        _agregar_columna_si_falta(
+            conn, "noticias_publicadas", "declaraba_fecha",
+            "INTEGER NOT NULL DEFAULT 0")
         conn.commit()
+
+
+def _agregar_columna_si_falta(conn, tabla: str, columna: str,
+                              definicion: str) -> None:
+    """
+    Migración de una base que ya existe.
+
+    CREATE TABLE IF NOT EXISTS no agrega columnas a una tabla creada
+    antes, y la base de memoria vive en el disco de Streamlit Cloud,
+    no en el repositorio: al desplegar una versión nueva la tabla que
+    hay es la vieja. Sin esto, la primera consulta después del
+    despliegue falla con "no such column" y el país entero se queda
+    sin reporte.
+    """
+    existentes = {f["name"] for f in
+                  conn.execute(f"PRAGMA table_info({tabla})").fetchall()}
+    if columna not in existentes:
+        conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {columna} {definicion}")
 
 
 def _fila(enlace_norm: str) -> Optional[sqlite3.Row]:
@@ -231,7 +252,31 @@ def motivo_para_no_publicar(noticia: Dict, hoy: Optional[str] = None) -> str:
         return ""
 
     # Regla 2 antes que la regla 1: es la más grave y su motivo dice más.
-    if fila["veces"] >= VECES_PARA_SOSPECHAR and fila["veces_verificada"] == 0:
+    #
+    # SOLO CUENTA SI LA CULPA ES DEL MEDIO (10-nov-2026). Esta regla
+    # nació del caso Vanguardia.cu: una página que el buscador
+    # rejuvenecía en cada corrida y que nunca se dejaba comprobar. Pero
+    # tal como estaba escrita castigaba por igual dos cosas muy
+    # distintas:
+    #
+    #   - la página no dice su fecha, o miente (culpa del medio), y
+    #   - la página SÍ dice su fecha y nuestro lector no supo leerla
+    #     (culpa nuestra).
+    #
+    # Le Nouvelliste y AlterPresse llevaban días cayendo en el segundo
+    # caso por un fallo del lector de fechas. A la tercera aparición
+    # habrían quedado vetados para siempre —y el motivo, escrito en el
+    # panel, habría culpado al medio de un error nuestro—. Se habría
+    # perdido en silencio buena parte de la prensa haitiana, que es
+    # justo la más difícil de sustituir.
+    #
+    # Desde que el diagnóstico guarda el marcado (ver
+    # verificacion.muestra_de_fechas), las dos situaciones se
+    # distinguen: si la página declaraba algo con forma de fecha, el
+    # fallo es del lector y esta regla no se aplica.
+    if (fila["veces"] >= VECES_PARA_SOSPECHAR
+            and fila["veces_verificada"] == 0
+            and not fila["declaraba_fecha"]):
         return (
             f"reincidente sin verificar: ya salió en {fila['veces']} reportes "
             f"y nunca se pudo contrastar su fecha con el medio"
@@ -300,6 +345,12 @@ def registrar_publicadas(
                 if not enlace:
                     continue
                 verificada = 1 if noticia.get("fecha_verificada") else 0
+                # Si la página declaraba algo con forma de fecha, el
+                # fallo al verificar es del lector y no del medio. Se
+                # guarda PEGAJOSO (MAX): basta que una vez se viera el
+                # marcado para que esta noticia no se vete por
+                # reincidente. Ver la regla 2 en motivo_para_omitir.
+                declaraba = 1 if noticia.get("pagina_declaraba_fecha") else 0
                 # La cuenta de "veces" cuenta REPORTES DISTINTOS, no
                 # escrituras: si se regenera un país tres veces en una
                 # tarde, sigue siendo una aparición. Sin esto, dos
@@ -308,8 +359,8 @@ def registrar_publicadas(
                 conn.execute("""
                     INSERT INTO noticias_publicadas
                         (enlace, pais, titulo, primera_vez, ultima_vez,
-                         veces, veces_verificada)
-                    VALUES (?, ?, ?, ?, ?, 1, ?)
+                         veces, veces_verificada, declaraba_fecha)
+                    VALUES (?, ?, ?, ?, ?, 1, ?, ?)
                     ON CONFLICT(enlace) DO UPDATE SET
                         ultima_vez = excluded.ultima_vez,
                         titulo = excluded.titulo,
@@ -319,8 +370,11 @@ def registrar_publicadas(
                         veces_verificada = noticias_publicadas.veces_verificada
                                 + (CASE WHEN noticias_publicadas.ultima_vez = excluded.ultima_vez
                                              OR excluded.veces_verificada = 0
-                                        THEN 0 ELSE 1 END)
-                """, (enlace, pais, noticia.get("titulo", ""), hoy, hoy, verificada))
+                                        THEN 0 ELSE 1 END),
+                        declaraba_fecha = MAX(noticias_publicadas.declaraba_fecha,
+                                              excluded.declaraba_fecha)
+                """, (enlace, pais, noticia.get("titulo", ""), hoy, hoy,
+                      verificada, declaraba))
             conn.commit()
     except sqlite3.Error:
         return
@@ -373,6 +427,7 @@ def reincidentes(minimo: int = VECES_PARA_SOSPECHAR) -> List[Dict]:
         filas = conn.execute("""
             SELECT * FROM noticias_publicadas
             WHERE veces >= ? AND veces_verificada = 0
+              AND declaraba_fecha = 0
             ORDER BY veces DESC, ultima_vez DESC
         """, (minimo,)).fetchall()
     return [dict(f) for f in filas]

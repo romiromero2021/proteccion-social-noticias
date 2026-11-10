@@ -343,7 +343,74 @@ def fecha_publicada_en_html(html: str) -> Optional[datetime]:
         fecha = _fecha_en_texto(cercano)
         if fecha is not None:
             return fecha
-    return None
+
+    return _fecha_en_json_incrustado(cuerpo)
+
+
+# ---------------------------------------------------------------------------
+# ÚLTIMO RECURSO: LA FECHA DENTRO DEL JSON QUE LA PÁGINA LLEVA INCRUSTADO
+# ---------------------------------------------------------------------------
+# EL CASO DE LE NOUVELLISTE (10-nov-2026), resuelto por fin con el
+# marcado a la vista en vez de a ojo. La página no trae <meta
+# article:published_time>, ni <time datetime>, ni JSON-LD, ni "Publié
+# le" en el texto: es una aplicación que deja su estado en un bloque
+# de JavaScript, y ahí la fecha aparece como una cadena suelta:
+#
+#     …no_user_photo.jpg","2026-11-03",…
+#
+# Dos intentos anteriores fallaron porque di por hecho el marcado
+# (microformato de SPIP, "Publié le" con fecha ISO) en vez de mirarlo.
+#
+# LA TRAMPA, que es lo que hace delicado el arreglo: la misma página
+# trae TRES veces la cadena
+#
+#     media.lenouvelliste.com/articles/2026-02-04/HopeHelpMCI_4938.jpg
+#
+# Un lector ingenuo que buscara "la primera fecha ISO del HTML" habría
+# devuelto el 4 de FEBRERO —la fecha de la imagen, nueve meses atrás—
+# y la noticia se habría descartado por vieja, en silencio y con aire
+# de dato comprobado.
+#
+# Lo que distingue a una de otra no es dónde está sino QUÉ ES: la
+# fecha de publicación ocupa una cadena JSON entera ("2026-11-03"),
+# mientras que la de la imagen es un pedazo de una ruta, con barras a
+# los lados. Por eso se exige la comilla pegada a ambos extremos.
+#
+# Y si aparece MÁS DE UNA fecha suelta distinta, no se devuelve
+# ninguna: no hay forma de saber cuál es la de publicación, y la regla
+# de la casa es que "no se pudo verificar" es mejor respuesta que una
+# conjetura con aspecto de dato. Se queda sin verificar y el
+# diagnóstico guarda el marcado.
+# Y TIENE QUE SER UNA FECHA SIN CLAVE. La primera versión de esta
+# regla se comió una defensa que costó encontrar: en
+# {"dateModified":"2026-11-09"} la fecha también ocupa una cadena
+# entera, así que la daba por buena y volvía a confundir la fecha de
+# MODIFICACIÓN con la de publicación.
+#
+# El criterio que lo arregla también explica por qué esta regla es el
+# último recurso: si la fecha viene con una clave delante
+# ("datePublished": …, "dateModified": …), de leerla se encargan los
+# patrones de arriba, que SÍ saben qué significa cada clave. Si uno de
+# ellos no la tomó, es que la clave no era de publicación, y entonces
+# aquí tampoco hay que tomarla. Lo único que esta regla puede leer es
+# una fecha sin clave ninguna: un valor suelto en una lista, precedido
+# de una coma o de un corchete.
+_FECHA_SUELTA_EN_JSON = re.compile(
+    r'[,\[]\s*"(\d{4}-\d{2}-\d{2})(?:[T ][0-9:.+\-Z]{0,14})?"')
+
+MAXIMO_FECHAS_SUELTAS = 1
+
+
+def _fecha_en_json_incrustado(html: str) -> Optional[datetime]:
+    distintas = []
+    for dia in _FECHA_SUELTA_EN_JSON.findall(html):
+        if dia not in distintas:
+            distintas.append(dia)
+        if len(distintas) > MAXIMO_FECHAS_SUELTAS:
+            return None
+    if len(distintas) != 1:
+        return None
+    return _parsear_iso(distintas[0])
 
 
 def _fecha_en_texto(texto: str) -> Optional[datetime]:
@@ -510,10 +577,20 @@ def muestra_de_fechas(html: str, limite: int = 520) -> str:
             if len(trozos) >= MUESTRAS_MAXIMAS:
                 break
         if not trozos:
-            return "la página no trae nada que parezca una fecha"
+            return SIN_SENALES_DE_FECHA
         return (" ⋯ ".join(trozos))[:limite]
     except Exception:
         return ""
+
+
+# Distinguir "la página no dice su fecha" de "la dice y no supimos
+# leerla" no es un matiz: memoria.py veta a la tercera aparición sin
+# verificar, y vetar por un fallo del lector borraría medios enteros.
+SIN_SENALES_DE_FECHA = "la página no trae nada que parezca una fecha"
+
+
+def la_pagina_declaraba_fecha(muestra: str) -> bool:
+    return bool(muestra) and muestra != SIN_SENALES_DE_FECHA
 
 
 def verificar_noticias(
@@ -587,6 +664,10 @@ def verificar_noticias(
             # la vista. Solo al panel. Ver muestra_de_fechas().
             if muestra:
                 verificada["_muestra_de_fecha"] = muestra
+            # Si la página SÍ declaraba algo con forma de fecha, el
+            # fallo es del lector y no del medio: memoria.py no debe
+            # vetar por esto. Ver la regla 2 en memoria.motivo_para_omitir.
+            verificada["_pagina_declaraba_fecha"] = la_pagina_declaraba_fecha(muestra)
             publicables.append(verificada)
             continue
 
