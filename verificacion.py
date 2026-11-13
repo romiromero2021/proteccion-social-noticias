@@ -578,6 +578,8 @@ def muestra_de_fechas(html: str, limite: int = 520) -> str:
             if len(trozos) >= MUESTRAS_MAXIMAS:
                 break
         if not trozos:
+            if _parece_muro(html):
+                return BLOQUEO_DEL_MEDIO + _que_nos_llego(html)
             return SIN_SENALES_DE_FECHA + _que_nos_llego(html)
         return (" ⋯ ".join(trozos))[:limite]
     except Exception:
@@ -621,6 +623,41 @@ def _que_nos_llego(html: str) -> str:
 # verificar, y vetar por un fallo del lector borraría medios enteros.
 SIN_SENALES_DE_FECHA = "la página no trae nada que parezca una fecha"
 
+# ALTERPRESSE (13-nov-2026). El diagnóstico devolvió 955 bytes y
+# <title>Pare-feu Domaine public</title>: un cortafuegos. La analista
+# comprobó, abriendo el enlace, que el artículo lleva «9 novembre
+# 2026» a la vista. Las dos cosas eran ciertas y el mensaje decía la
+# falsa: "la página no trae nada que parezca una fecha" sugiere que el
+# medio publica sin fechar, y lo que ocurre es que a nosotros no nos
+# llega el artículo. Distinguirlo importa porque son problemas
+# distintos: uno se arregla leyendo mejor y el otro no se arregla
+# leyendo.
+BLOQUEO_DEL_MEDIO = (
+    "el medio bloqueó la comprobación automática: lo que llegó no es "
+    "el artículo sino una página de cortafuegos, así que la fecha no "
+    "se pudo contrastar (el artículo sí la lleva)"
+)
+
+_SENALES_DE_MURO = re.compile(
+    r"pare-?feu|just a moment|checking your browser|attention required|"
+    r"cf-browser-verification|cf-challenge|captcha|access denied|"
+    r"acceso denegado|forbidden|ddos.?guard|incapsula|are you a robot|"
+    r"enable javascript to continue",
+    re.IGNORECASE)
+
+# Un muro es corto. Un artículo real sin ninguna fecha dentro es raro,
+# pero existe; exigir las dos cosas evita llamar "bloqueo" a una
+# página larga que simplemente no fecha.
+BYTES_DE_MURO = 20000
+
+
+def _parece_muro(html: str) -> bool:
+    try:
+        return (len(html or "") < BYTES_DE_MURO
+                and bool(_SENALES_DE_MURO.search(html or "")))
+    except Exception:
+        return False
+
 
 def la_pagina_declaraba_fecha(muestra: str) -> bool:
     # startswith y no !=: desde el 13-nov el mensaje de "no trae nada"
@@ -628,6 +665,11 @@ def la_pagina_declaraba_fecha(muestra: str) -> bool:
     # comparación exacta, ese añadido haría que una página SIN fecha
     # pasara por una página CON fecha, y eso desactivaría el veto de
     # reincidentes justo para los medios que de verdad lo merecen.
+    # Un muro del medio no es "el medio no fecha sus artículos", así
+    # que tampoco puede contar como culpa suya para el veto de
+    # reincidentes: el artículo sí lleva su fecha detrás del muro.
+    if muestra.startswith(BLOQUEO_DEL_MEDIO):
+        return True
     return bool(muestra) and not muestra.startswith(SIN_SENALES_DE_FECHA)
 
 
@@ -681,8 +723,62 @@ def _dominio(link: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-def _exige_fecha_verificada(link: str) -> bool:
-    return _dominio(link) in _DOMINIOS_SIN_FECHA_CONFIABLE
+def _exige_fecha_verificada(link: str, fuente: str = "") -> bool:
+    """
+    ¿Este medio tiene que enseñar su fecha para que lo publiquemos?
+
+    SE MIRA EL ENLACE Y TAMBIÉN EL NOMBRE DEL MEDIO (13-nov-2026).
+    Mirar solo el dominio no bastó: el artículo de julio de
+    Vanguardia.cu volvió a publicarse el 13-nov CON la regla ya
+    desplegada.
+
+    La causa es que el buscador entrega los enlaces, de forma
+    intermitente, envueltos en su redirector
+    (google.com/goto?url=CAESowEB…). Cuando además la página no
+    responde, no hay redirección que seguir y el enlace se queda
+    envuelto. A partir de ahí el dominio que ve el programa es
+    google.com, y con él fallan A LA VEZ todas las reglas que se
+    apoyan en el enlace: esta, el veto fijo por URL de memoria.py, la
+    memoria de lo ya publicado y el deduplicador. El mismo redirector
+    es el que hizo que la nota salvadoreña apareciera publicada y
+    descartada a la vez.
+
+    El nombre del medio, en cambio, el buscador lo entrega siempre y
+    sin envolver: "Vanguardia.cu". Se compara contra la etiqueta
+    principal del dominio y contra el dominio entero, exigiendo
+    coincidencia exacta tras normalizar, para no emparejar de más.
+    """
+    if _dominio(link) in _DOMINIOS_SIN_FECHA_CONFIABLE:
+        return True
+    if not fuente:
+        return False
+    limpia = _normalizar_nombre(fuente)
+    if not limpia:
+        return False
+    for dominio in _DOMINIOS_SIN_FECHA_CONFIABLE:
+        if limpia in (_normalizar_nombre(dominio),
+                      _normalizar_nombre(dominio.split(".")[0])):
+            return True
+    return False
+
+
+def _por_que_este_medio(link: str, fuente: str = "") -> str:
+    """La razón escrita del dominio que activó la regla, para el panel."""
+    dominio = _dominio(link)
+    if dominio in _DOMINIOS_SIN_FECHA_CONFIABLE:
+        return _DOMINIOS_SIN_FECHA_CONFIABLE[dominio]
+    limpia = _normalizar_nombre(fuente)
+    for d, razon in _DOMINIOS_SIN_FECHA_CONFIABLE.items():
+        if limpia in (_normalizar_nombre(d), _normalizar_nombre(d.split(".")[0])):
+            return razon
+    return "medio marcado como de fecha no confiable"
+
+
+def _normalizar_nombre(texto: str) -> str:
+    sin_tildes = "".join(
+        c for c in unicodedata.normalize("NFD", (texto or "").lower())
+        if unicodedata.category(c) != "Mn")
+    return re.sub(r"[^a-z0-9]", "", sin_tildes)
 
 
 def verificar_noticias(
@@ -760,7 +856,8 @@ def verificar_noticias(
             # fallo es del lector y no del medio: memoria.py no debe
             # vetar por esto. Ver la regla 2 en memoria.motivo_para_omitir.
             verificada["_pagina_declaraba_fecha"] = la_pagina_declaraba_fecha(muestra)
-            if _exige_fecha_verificada(verificada.get("link", "")):
+            if _exige_fecha_verificada(verificada.get("link", ""),
+                                       verificada.get("fuente", "")):
                 rechazadas.append({
                     "titulo": verificada.get("titulo", ""),
                     "fuente": verificada.get("fuente", ""),
@@ -774,7 +871,9 @@ def verificar_noticias(
                     "razon": (
                         f"fecha sin comprobar en un medio que ya ha "
                         f"presentado artículos viejos como recientes "
-                        f"({motivo}); {_DOMINIOS_SIN_FECHA_CONFIABLE[_dominio(verificada.get('link', ''))]}"
+                        f"({motivo}); "
+                        + _por_que_este_medio(verificada.get("link", ""),
+                                              verificada.get("fuente", ""))
                     ),
                 })
                 continue
