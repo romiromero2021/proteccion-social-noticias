@@ -337,6 +337,42 @@ def _llamar_groq_con_reintentos(
 # Nota mínima para que una noticia se publique.
 NOTA_MINIMA_PARA_PUBLICAR = 2
 
+
+def claves_de_identidad(noticia: Dict) -> set:
+    """
+    Con qué reconocer que dos copias de una noticia son la misma.
+
+    Se devuelve un CONJUNTO y no una sola clave, y se comparan por
+    intersección, porque cada copia conserva unas señas y pierde otras
+    según el camino que haya recorrido.
+
+    EL CASO QUE LO OBLIGÓ (13-nov-2026). El buscador entregó la nota
+    de Pension Policy International sobre la reforma salvadoreña
+    envuelta en un redirector (google.com/goto?url=CAESowEB…).
+    `verificar_noticias` sigue la redirección y REESCRIBE el enlace con
+    la URL real, así que la copia publicada y la candidata original
+    dejaron de compartir enlace: la misma noticia salió como número 1
+    de El Salvador y a la vez en el panel de descartadas, con 3/3 y sin
+    motivo de descarte.
+
+    El 9-nov este defecto ya había aparecido —la publicada salía dos
+    veces— y se arregló comparando por enlace en vez de por igualdad de
+    diccionarios. Eso arregló el síntoma. El error de fondo es
+    identificar algo por un campo que el propio proceso modifica.
+
+    `_id_candidata` se pone al armar las candidatas y no cambia nunca;
+    el enlace queda como respaldo para las noticias que lleguen por un
+    camino que no pasó por el marcado, y el título como último recurso.
+
+    El panel es el instrumento con el que la analista audita la
+    herramienta: un panel que miente no es un defecto cosmético.
+    """
+    claves = {c for c in (noticia.get("_id_candidata"), noticia.get("link")) if c}
+    if claves:
+        return claves
+    titulo = noticia.get("titulo")
+    return {titulo} if titulo else set()
+
 # ---------------------------------------------------------------------------
 # SELLO DE VERSIÓN DEL CÓDIGO
 # ---------------------------------------------------------------------------
@@ -974,6 +1010,12 @@ def procesar_pais(
         vistos.add(link)
         candidatas.append(n)
 
+    # Marca estable de cada candidata, para poder seguirle la pista
+    # aunque el proceso le reescriba el enlace al resolver un
+    # redirector del buscador. Ver _clave() más abajo.
+    for i, n in enumerate(candidatas):
+        n["_id_candidata"] = f"c{i}"
+
     if not candidatas:
         return {"pais": pais, "noticias": [], "sin_resultados": True,
                 "errores_llm": [], "descartadas": [], "ramas": ramas}
@@ -1100,24 +1142,38 @@ def procesar_pais(
     # es definitiva: así cada noticia aparece una sola vez y con el
     # motivo que de verdad la dejó fuera.
     #
-    # Se compara por ENLACE y no por igualdad de diccionarios:
-    # verificar_noticias devuelve COPIAS con campos añadidos, así que
-    # `n not in seleccion` daba siempre verdadero y la noticia
-    # publicada aparecía además en el panel de descartes.
-    def _clave(noticia: Dict) -> str:
-        return noticia.get("link") or noticia.get("titulo", "")
-
-    ya_resueltas = (
-        {_clave(n) for n in seleccion}
-        | {_clave(n) for n in fuera_de_fecha}
-        | {_clave(n) for n in repetidas}
-    )
+    # SE COMPARA POR UNA MARCA PROPIA, NO POR EL ENLACE (13-nov-2026).
+    #
+    # Primero se comparaba por igualdad de diccionarios, y como
+    # verificar_noticias devuelve COPIAS con campos añadidos, `n not in
+    # seleccion` daba siempre verdadero: la noticia publicada aparecía
+    # además en el panel de descartes. El 9-nov se cambió a comparar
+    # por enlace, y eso arregló el caso corriente pero no el de fondo.
+    #
+    # El 13-nov volvió a pasar, con El Salvador. El buscador entregó la
+    # nota de Pension Policy International envuelta en un redirector
+    # (google.com/goto?url=CAESowEB…). verificar_noticias sigue la
+    # redirección y REESCRIBE el enlace con la URL real, así que la
+    # copia publicada y la candidata original ya no comparten enlace:
+    # la misma noticia salía como número 1 de El Salvador y a la vez en
+    # el panel de descartadas, con 3/3 y sin motivo de descarte.
+    #
+    # El error de fondo es comparar por un campo que el propio proceso
+    # modifica. La marca que sigue se pone al armar las candidatas, no
+    # cambia nunca, y viaja en las copias: es inmune a que mañana se
+    # reescriba el enlace, la fecha, la fuente o el título.
+    #
+    # El enlace y el título quedan de respaldo por si alguna noticia
+    # llega por un camino que no pasó por el marcado.
+    ya_resueltas: set = set()
+    for n in list(seleccion) + list(fuera_de_fecha) + list(repetidas):
+        ya_resueltas |= claves_de_identidad(n)
     descartadas = [
         {"titulo": n["titulo"], "fuente": n.get("fuente", ""),
          "link": n.get("link", ""), "nota": n.get("nota"),
          "razon": n.get("razon", "")}
         for n in puntuadas
-        if _clave(n) not in ya_resueltas
+        if not (claves_de_identidad(n) & ya_resueltas)
     ] + sin_puntuar + repetidas + fuera_de_fecha
 
     if not seleccion:

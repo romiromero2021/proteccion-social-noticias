@@ -50,6 +50,7 @@ import json
 import os
 import re
 import unicodedata
+from urllib.parse import urlparse
 from html import unescape
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -577,8 +578,40 @@ def muestra_de_fechas(html: str, limite: int = 520) -> str:
             if len(trozos) >= MUESTRAS_MAXIMAS:
                 break
         if not trozos:
-            return SIN_SENALES_DE_FECHA
+            return SIN_SENALES_DE_FECHA + _que_nos_llego(html)
         return (" ⋯ ".join(trozos))[:limite]
+    except Exception:
+        return ""
+
+
+_TITULO_HTML = re.compile(r"<title[^>]*>(.{0,120}?)</title>",
+                          re.IGNORECASE | re.DOTALL)
+
+
+def _que_nos_llego(html: str) -> str:
+    """
+    Cuando la página no trae NADA con forma de fecha, lo más probable
+    es que no sea la página del artículo.
+
+    ALTERPRESSE (13-nov-2026). El diagnóstico dijo "la página no trae
+    nada que parezca una fecha" y la analista comprobó, abriendo el
+    enlace en su navegador, que el artículo lleva «9 novembre 2026» a
+    la vista. Las dos cosas son ciertas a la vez: el artículo tiene su
+    fecha y a nosotros nos llegó otra cosa —un muro anti-robots, una
+    página de espera con JavaScript, un aviso de consentimiento—, que
+    devuelve 200 y un cuerpo sin ninguna fecha dentro.
+
+    Con el tamaño y el <title> de lo que llegó se distingue en un
+    vistazo: «Just a moment…» es Cloudflare, un cuerpo de 2 KB no es
+    un artículo. Sin eso, el siguiente intento sería otra conjetura
+    sobre el marcado, que ya falló dos veces con Le Nouvelliste.
+    """
+    try:
+        titulo = _TITULO_HTML.search(html or "")
+        visible = re.sub(r"\s+", " ", titulo.group(1)).strip() if titulo else ""
+        return (f" [lo que llegó: {len(html or '')} bytes"
+                + (f", <title>{visible}</title>" if visible else ", sin <title>")
+                + "]")
     except Exception:
         return ""
 
@@ -590,7 +623,66 @@ SIN_SENALES_DE_FECHA = "la página no trae nada que parezca una fecha"
 
 
 def la_pagina_declaraba_fecha(muestra: str) -> bool:
-    return bool(muestra) and muestra != SIN_SENALES_DE_FECHA
+    # startswith y no !=: desde el 13-nov el mensaje de "no trae nada"
+    # lleva pegado el tamaño y el <title> de lo que llegó. Con una
+    # comparación exacta, ese añadido haría que una página SIN fecha
+    # pasara por una página CON fecha, y eso desactivaría el veto de
+    # reincidentes justo para los medios que de verdad lo merecen.
+    return bool(muestra) and not muestra.startswith(SIN_SENALES_DE_FECHA)
+
+
+# ---------------------------------------------------------------------------
+# MEDIOS CUYA FECHA NO SE PUEDE DAR POR BUENA
+# ---------------------------------------------------------------------------
+# LA REGLA DE LA CASA ES FALLAR ABIERTO: si una página no responde, la
+# noticia se publica igual con el aviso de "fecha sin verificar", porque
+# perder noticias buenas por una web lenta sale más caro que publicar
+# una con fecha dudosa. Eso sigue valiendo para todos los medios menos
+# para los de esta lista, donde la evidencia dice lo contrario.
+#
+# VANGUARDIA.CU, dos casos documentados a mano:
+#   - 9-nov-2026: "Actualizan salario mínimo e incrementan escala
+#     salarial del sector presupuestado" (artículo 37891), del 17 de
+#     julio de 2026, que el buscador reportaba como reciente en cada
+#     corrida. Se vetó a mano, por URL.
+#   - 13-nov-2026: "Aprueban propuesta de reforma salarial integral en
+#     el sector estatal" (artículo 37758), del 19 de JUNIO de 2026,
+#     publicado en el boletín como "Hace 6 días". La analista lo
+#     descubrió abriendo el enlace.
+#
+# Dos artículos distintos, misma patología, y el veto por URL no
+# escala: habría que cazar uno por uno, siempre después de que se
+# publicara. El sitio además nunca responde a la verificación, así que
+# el sistema no tiene forma de contrastar nada.
+#
+# Para estos dominios se invierte la regla: sin fecha comprobada, no se
+# publica. La noticia aparece en el panel de descartadas con su motivo,
+# así que no desaparece en silencio y el costo queda a la vista. Si el
+# medio SÍ se deja verificar en alguna corrida, esa noticia se publica
+# con normalidad: lo que se exige es la comprobación, no la exclusión.
+#
+# La lista se amplía solo con casos comprobados a mano, nunca por
+# sospecha: cada dominio que entra aquí cuesta cobertura real, y en
+# Cuba la prensa disponible ya es escasa.
+_DOMINIOS_SIN_FECHA_CONFIABLE: Dict[str, str] = {
+    "vanguardia.cu": (
+        "dos artículos suyos (julio y junio de 2026) salieron como "
+        "recientes y el sitio no responde a la comprobación; "
+        "comprobado a mano el 9 y el 13-nov-2026"
+    ),
+}
+
+
+def _dominio(link: str) -> str:
+    try:
+        host = urlparse(link).netloc.lower()
+    except Exception:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def _exige_fecha_verificada(link: str) -> bool:
+    return _dominio(link) in _DOMINIOS_SIN_FECHA_CONFIABLE
 
 
 def verificar_noticias(
@@ -668,6 +760,24 @@ def verificar_noticias(
             # fallo es del lector y no del medio: memoria.py no debe
             # vetar por esto. Ver la regla 2 en memoria.motivo_para_omitir.
             verificada["_pagina_declaraba_fecha"] = la_pagina_declaraba_fecha(muestra)
+            if _exige_fecha_verificada(verificada.get("link", "")):
+                rechazadas.append({
+                    "titulo": verificada.get("titulo", ""),
+                    "fuente": verificada.get("fuente", ""),
+                    "link": verificada.get("link", ""),
+                    "nota": verificada.get("nota"),
+                    # La marca de la candidata viaja con el descarte:
+                    # sin ella, quien arma el panel vuelve a comparar
+                    # por enlace, que es el campo que esta función
+                    # reescribe. Ver summarizer._clave().
+                    "_id_candidata": verificada.get("_id_candidata"),
+                    "razon": (
+                        f"fecha sin comprobar en un medio que ya ha "
+                        f"presentado artículos viejos como recientes "
+                        f"({motivo}); {_DOMINIOS_SIN_FECHA_CONFIABLE[_dominio(verificada.get('link', ''))]}"
+                    ),
+                })
+                continue
             publicables.append(verificada)
             continue
 
@@ -683,6 +793,7 @@ def verificar_noticias(
                 "fuente": verificada.get("fuente", ""),
                 "link": verificada.get("link", ""),
                 "nota": verificada.get("nota"),
+                "_id_candidata": verificada.get("_id_candidata"),
                 "razon": (
                     f"fecha real fuera de rango: el medio la publicó el "
                     f"{_en_letra(fecha_real, huso)} (hace {dias} días) y el "
