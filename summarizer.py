@@ -18,7 +18,7 @@ from scraper import (deduplicar_noticias, es_de_medio_curado, ordenar_marginales
                      titulos_similares, DIAS_MAXIMOS_ANTIGUEDAD)
 from verificacion import verificar_noticias
 import memoria
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import groq
 from groq import Groq
@@ -74,6 +74,36 @@ _SENALES_MODELO_RETIRADO = (
 
 MAX_REINTENTOS = 3
 ESPERA_BASE_SEGUNDOS = 2  # backoff exponencial: 2s, 4s, 8s
+
+# Tope de lo que se acepta esperar cuando Groq pide una pausa. Por
+# encima de esto no es un bache de ritmo sino el presupuesto agotado, y
+# lo honesto es usar el extracto y decirlo, no tener el reporte parado
+# doce minutos sin que nadie sepa por qué.
+ESPERA_MAXIMA_POR_429 = 90
+
+# "Please try again in 7.521s" · "in 1m30s" · "in 12m34.5s"
+_ESPERA_EN_EL_MENSAJE = re.compile(
+    r"try\s+again\s+in\s+"
+    r"(?:(?P<min>\d+(?:\.\d+)?)\s*m)?\s*"
+    r"(?:(?P<seg>\d+(?:\.\d+)?)\s*s)?",
+    re.IGNORECASE)
+
+
+def segundos_de_espera_sugeridos(mensaje: str) -> Optional[float]:
+    """
+    Los segundos que Groq pide esperar, leídos de su propio 429.
+
+    Devuelve None si el mensaje no lo dice, y entonces se usa el
+    retroceso exponencial de siempre. Nunca lanza: un mensaje de error
+    raro no puede tumbar la corrida que ya venía mal.
+    """
+    try:
+        m = _ESPERA_EN_EL_MENSAJE.search(mensaje or "")
+        if not m or not (m.group("min") or m.group("seg")):
+            return None
+        return float(m.group("min") or 0) * 60 + float(m.group("seg") or 0)
+    except Exception:
+        return None
 # Ritmo entre llamadas consecutivas a Groq. El factor que manda NO es el
 # límite de peticiones por minuto (30 RPM) sino el de TOKENS por minuto:
 # openai/gpt-oss-120b tiene 8,000 TPM en el plan gratuito, menos que los
@@ -256,8 +286,27 @@ def _llamar_groq_con_reintentos(
 
             except groq.RateLimitError as e:
                 ultimo_error = f"Intento {intento} [{modelo}]: RateLimitError (429) - {e}"
+                # GROQ DICE CUÁNTO HAY QUE ESPERAR; ANTES NO SE LE HACÍA
+                # CASO (13-nov-2026). El 429 trae "Please try again in
+                # 41.2s" y el reintento salía a los 2, 4 y 8 segundos:
+                # los tres caían dentro del mismo minuto que ya estaba
+                # agotado, así que los tres fallaban. Eso es lo que dejó
+                # sin resumen a las cinco noticias de República
+                # Dominicana, y lo que hizo subir los 429 a quince en la
+                # gráfica de la cuenta: tres intentos por noticia, todos
+                # condenados de antemano.
+                espera = segundos_de_espera_sugeridos(str(e))
+                if espera is not None and espera > ESPERA_MAXIMA_POR_429:
+                    # Más de un minuto y medio de espera no es un bache
+                    # de ritmo: es el presupuesto agotado. Seguir
+                    # intentando solo alarga el reporte.
+                    ultimo_error += (
+                        f" | Groq pide esperar {espera:.0f}s, más de lo que "
+                        f"esta corrida puede sostener: se usa el extracto")
+                    return None, ultimo_error
                 if intento < MAX_REINTENTOS:
-                    time.sleep(ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1)))
+                    por_defecto = ESPERA_BASE_SEGUNDOS * (2 ** (intento - 1))
+                    time.sleep(max(espera or 0, por_defecto))
                     continue
 
             except groq.APIStatusError as e:
@@ -915,7 +964,15 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
     return {
         "resumen": (snippet if _extracto_sirve_de_resumen(snippet, titulo)
                     else (titulo or "Resumen no disponible.")),
-        "error_detalle": error,
+        # NUNCA SIN MOTIVO (13-nov-2026). El reporte de ese día marcó
+        # las cinco noticias de República Dominicana como extracto, y
+        # el aviso técnico de la sección no apareció: el motivo venía
+        # vacío y el `if` que lo registraba no se disparaba. La
+        # analista vio que el modelo había fallado y no pudo saber por
+        # qué. Un fallo sin causa escrita obliga a adivinar, y adivinar
+        # fue lo que costó media semana con las fechas haitianas.
+        "error_detalle": (error or "el modelo no respondió y no informó "
+                                   "de la causa"),
         "es_extracto_no_resumen": True,
     }
 
@@ -1196,8 +1253,17 @@ def procesar_pais(
             pais=pais,
             groq_api_key=groq_api_key,
         )
-        if resultado["error_detalle"]:
-            errores_llm.append(f"{noticia['titulo'][:50]}... -> {resultado['error_detalle']}")
+        # EL AVISO Y LA MARCA SE DISPARAN CON EL MISMO HECHO
+        # (13-nov-2026). Antes el aviso de sección dependía de que
+        # hubiera texto de error y la marca de la noticia de que
+        # hubiera habido respaldo. Son el mismo suceso, así que
+        # separarlos solo podía producir lo que produjo: cinco
+        # noticias marcadas como extracto y ni una palabra de que el
+        # modelo había fallado.
+        if resultado.get("es_extracto_no_resumen") or resultado["error_detalle"]:
+            errores_llm.append(
+                f"{noticia['titulo'][:50]}... -> "
+                f"{resultado['error_detalle'] or 'sin causa informada'}")
 
         procesadas.append({
             "titulo": noticia["titulo"],
