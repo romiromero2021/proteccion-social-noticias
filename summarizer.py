@@ -18,6 +18,8 @@ from scraper import (deduplicar_noticias, es_de_medio_curado, ordenar_marginales
                      titulos_similares, DIAS_MAXIMOS_ANTIGUEDAD)
 from verificacion import verificar_noticias
 import memoria
+import threading
+from collections import deque
 from typing import List, Dict, Optional
 
 import groq
@@ -80,6 +82,349 @@ ESPERA_BASE_SEGUNDOS = 2  # backoff exponencial: 2s, 4s, 8s
 # lo honesto es usar el extracto y decirlo, no tener el reporte parado
 # doce minutos sin que nadie sepa por qué.
 ESPERA_MAXIMA_POR_429 = 90
+
+# ---------------------------------------------------------------------------
+# REGULADOR DE RITMO: NO GASTAR MÁS FICHAS POR MINUTO DE LAS QUE HAY
+# ---------------------------------------------------------------------------
+# POR QUÉ EXISTE (13-nov-2026). La cuenta de Groq enseñó la curva de
+# fichas cruzando la línea del límite POR MINUTO dos veces, con los 429
+# detrás. Las peticiones iban holgadas —14 contra un techo de 30—, así
+# que no sobran llamadas: sobran fichas por llamada.
+#
+# La aritmética es estrecha. Puntuar un país cuesta unas 4.300 fichas
+# (el prompt del editor) y resumir sus cinco noticias otras 2.200: unas
+# 6.500 por país contra 8.000 por minuto. El ritmo sostenible es de un
+# país por minuto, y el código iba bastante más rápido.
+#
+# Esa mañana se arregló que el 429 se respetara en vez de reintentarse
+# tres veces en vano. Sirvió para no perder resúmenes por un bache,
+# pero no para esto: cuando el presupuesto está agotado de verdad, Groq
+# pide esperas largas, el programa se rinde y devuelve el extracto. La
+# corrida de las 15:46 lo enseñó sin lugar a dudas — de Haití en
+# adelante, trece noticias con extracto en vez de resumen. Arreglé
+# cómo se ve el fallo, no el fallo.
+#
+# Esto es lo otro: llevar la cuenta de lo gastado en los últimos
+# sesenta segundos y esperar ANTES de llamar si la siguiente llamada no
+# cabe. Es la diferencia entre respetar un presupuesto y descubrirlo
+# chocando contra él.
+LIMITE_FICHAS_POR_MINUTO = 8000
+# Se reserva un margen porque la cuenta de fichas es una estimación y
+# porque la ventana del servidor no empieza donde empieza la nuestra.
+MARGEN_DEL_REGULADOR = 0.85
+VENTANA_DEL_LIMITE = 60.0
+# Español y francés rondan 3,3 caracteres por ficha. Sobrestimar un
+# poco es barato; subestimar devuelve los 429.
+CARACTERES_POR_FICHA = 3.1
+
+
+# Cuánta respuesta se da por supuesta al estimar.
+#
+# NO SE USA max_completion_tokens (13-nov-2026). Ese número es un TOPE,
+# no un gasto: la llamada del resumen lo tiene en 800 y escribe tres
+# frases (~100 fichas); la del editor lo tiene en 1.200 y escribe una
+# línea por noticia (~250). Contar el tope inflaba la estimación de un
+# resumen de ~860 a ~1.560 fichas, y con eso el regulador habría
+# frenado la corrida casi el doble de lo necesario.
+#
+# Quedarse corto aquí es barato: `ReguladorDeFichas.ajustar` corrige la
+# anotación con el gasto real en cuanto Groq responde, así que un error
+# de estimación dura lo que dura una llamada y no se acumula.
+PREVISION_DE_SALIDA = 400
+
+
+def fichas_estimadas(prompt: str, max_completion_tokens: int) -> int:
+    """
+    Lo que se espera que cueste una llamada, ida y vuelta.
+
+    Es una previsión para decidir cuánto esperar, no una factura: la
+    factura la pone Groq y se anota después. Ver ajustar().
+    """
+    entrada = int(len(prompt or "") / CARACTERES_POR_FICHA)
+    tope = int(max_completion_tokens or 0)
+    return entrada + min(tope, PREVISION_DE_SALIDA)
+
+
+_UNIDADES = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+_DURACION = re.compile(r"(\d+(?:\.\d+)?)\s*(ms|s|m|h)", re.IGNORECASE)
+
+
+def segundos_de_cabecera(valor) -> Optional[float]:
+    """
+    Lee una duración de las cabeceras de Groq: "7.66s", "1m30s", "500ms".
+
+    Devuelve None si no se entiende, y entonces se usa la ventana de
+    siempre. Nunca lanza.
+    """
+    try:
+        if valor is None:
+            return None
+        texto = str(valor).strip()
+        if not texto:
+            return None
+        partes = _DURACION.findall(texto)
+        if partes:
+            return sum(float(n) * _UNIDADES[u.lower()] for n, u in partes)
+        return float(texto)          # algunas cabeceras vienen en segundos pelados
+    except Exception:
+        return None
+
+
+def _limite_de_cabeceras(cabeceras) -> tuple:
+    """
+    (restantes, segundos_para_reponer) según el contador de Groq.
+
+    Las cabeceras son x-ratelimit-remaining-tokens y
+    x-ratelimit-reset-tokens. Si no vienen, (None, None) y se sigue
+    con la estimación propia.
+    """
+    try:
+        if not cabeceras:
+            return None, None
+        leer = cabeceras.get if hasattr(cabeceras, "get") else (lambda k: None)
+        restantes = leer("x-ratelimit-remaining-tokens")
+        reponer = segundos_de_cabecera(leer("x-ratelimit-reset-tokens"))
+        return (int(restantes) if restantes is not None else None), reponer
+    except Exception:
+        return None, None
+
+
+def _crear_leyendo_cabeceras(cliente, modelo, prompt, temperature,
+                             max_completion_tokens, extra):
+    """
+    Llama a Groq pidiendo también las cabeceras de la respuesta.
+
+    `with_raw_response` existe en el SDK de Groq (1.7), pero si una
+    versión futura lo quita o cambia, se vuelve a la llamada normal: el
+    regulador seguirá funcionando con su propia estimación, algo peor
+    pero sin romperse. Una mejora de precisión no puede convertirse en
+    un motivo de caída.
+    """
+    try:
+        cruda = cliente.chat.completions.with_raw_response.create(
+            model=modelo,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_completion_tokens=max_completion_tokens,
+            **extra,
+        )
+        return cruda.parse(), getattr(cruda, "headers", None)
+    except (AttributeError, TypeError):
+        respuesta = cliente.chat.completions.create(
+            model=modelo,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_completion_tokens=max_completion_tokens,
+            **extra,
+        )
+        return respuesta, None
+
+
+def _fichas_gastadas(respuesta) -> Optional[int]:
+    """
+    El gasto real que Groq informa en la respuesta.
+
+    Devuelve None si no viene: entonces se conserva la estimación, que
+    es lo seguro. Nunca lanza — un campo que falte no puede tumbar una
+    llamada que salió bien.
+    """
+    try:
+        uso = getattr(respuesta, "usage", None)
+        if uso is None:
+            return None
+        total = getattr(uso, "total_tokens", None)
+        if total is None:
+            entrada = getattr(uso, "prompt_tokens", 0) or 0
+            salida = getattr(uso, "completion_tokens", 0) or 0
+            total = entrada + salida
+        return int(total) if total else None
+    except Exception:
+        return None
+
+
+class ReguladorDeFichas:
+    """
+    Mantiene el gasto por debajo del límite por minuto.
+
+    El reloj y la espera se inyectan para poder probar el
+    comportamiento sin que las pruebas tarden un minuto.
+    """
+
+    def __init__(self, limite: int = LIMITE_FICHAS_POR_MINUTO,
+                 margen: float = MARGEN_DEL_REGULADOR,
+                 ventana: float = VENTANA_DEL_LIMITE,
+                 reloj=time.monotonic, dormir=time.sleep):
+        self.presupuesto = max(1, int(limite * margen))
+        self.ventana = ventana
+        self._reloj = reloj
+        self._dormir = dormir
+        self._gastos: deque = deque()  # (momento, fichas)
+        # UN CERROJO PORQUE STREAMLIT ES MULTIHILO (18-nov-2026).
+        # Cada sesión del navegador corre en su propio hilo y el
+        # regulador es uno solo para todo el proceso, que es lo
+        # correcto: el presupuesto es de la clave de Groq, no de la
+        # pestaña. Pero `reservar` lee la ventana, decide y escribe, y
+        # dos hilos haciendo eso a la vez pueden concluir los dos que
+        # hay sitio y pasarse juntos del límite.
+        #
+        # Con dos pestañas abiertas generando reportes —cosa que pasa
+        # cuando uno cree que la primera se ha colgado— eso devuelve
+        # los 429 que todo esto existe para evitar.
+        #
+        # El cerrojo se sostiene durante la espera a propósito: lo que
+        # se quiere es justamente que el segundo hilo aguarde su turno
+        # en vez de gastar por su cuenta.
+        self._cerrojo = threading.RLock()
+
+    def _purgar(self, ahora: float) -> None:
+        while self._gastos and ahora - self._gastos[0][0] >= self.ventana:
+            self._gastos.popleft()
+
+    def gastado(self) -> int:
+        with self._cerrojo:
+            self._purgar(self._reloj())
+            return sum(f for _, f in self._gastos)
+
+    def reservar(self, fichas: int) -> float:
+        """
+        Espera lo necesario para que quepan `fichas` y las anota.
+
+        Devuelve los segundos esperados, para poder contarlo.
+        """
+        fichas = max(0, int(fichas))
+        esperado = 0.0
+        with self._cerrojo:
+            while True:
+                ahora = self._reloj()
+                self._purgar(ahora)
+                en_uso = sum(f for _, f in self._gastos)
+                if not self._gastos or en_uso + fichas <= self.presupuesto:
+                    # Una sola llamada mayor que el presupuesto entero
+                    # no se puede dividir: se deja pasar con la ventana
+                    # vacía y que el 429 haga el resto. Bloquearla
+                    # sería dejar al país sin editor para siempre.
+                    self._gastos.append((ahora, fichas))
+                    return esperado
+                falta = self.ventana - (ahora - self._gastos[0][0])
+                if falta <= 0:
+                    continue
+                self._dormir(falta)
+                esperado += falta
+
+    def ajustar(self, estimado: int, real: int) -> None:
+        """
+        Sustituye la estimación por lo que Groq dice que costó.
+
+        POR QUÉ (13-nov-2026). El regulador decide cuánto esperar con
+        una cuenta a ojo: caracteres partidos por 3,1 más el tope de
+        respuesta. Las dos mitades fallan en direcciones distintas —el
+        tope de respuesta sobra casi siempre, y el texto en francés
+        gasta más de lo previsto— y de esa estimación depende que la
+        corrida entera choque o no contra el límite.
+
+        No hace falta adivinar: cada respuesta de Groq trae el gasto
+        real en `usage`. Se estima para decidir la espera y se corrige
+        en cuanto llega el dato, así que lo que queda anotado en la
+        ventana es lo que de verdad se gastó.
+        """
+        try:
+            real = max(0, int(real))
+        except (TypeError, ValueError):
+            return
+        with self._cerrojo:
+            if not self._gastos:
+                return
+            momento, anotado = self._gastos[-1]
+            if anotado == int(estimado):
+                self._gastos[-1] = (momento, real)
+
+    def sincronizar(self, restantes: Optional[int],
+                    reponer_en: Optional[float]) -> bool:
+        """
+        Sustituir la cuenta propia por la del servidor.
+
+        POR QUÉ (13-nov-2026). Todo lo de arriba descansa en dos
+        números que me inventé: 3,1 caracteres por ficha y un límite de
+        8.000 por minuto. El primero no pude validarlo —el tokenizador
+        no se puede descargar desde aquí— y el segundo lo leí de una
+        gráfica. Dos veces en una tarde una cuenta mía a ojo resultó
+        estar al doble de la realidad.
+
+        Pero no hace falta ninguna de las dos: Groq manda en cada
+        respuesta cuántas fichas le quedan a la ventana y en cuántos
+        segundos se repone. Eso no es una estimación, es su contador.
+
+        La estimación se queda para decidir la espera ANTES de la
+        primera llamada y entre cabeceras; en cuanto llega una, manda
+        ella. Devuelve True si se pudo sincronizar.
+        """
+        if restantes is None:
+            return False
+        try:
+            restantes = max(0, int(restantes))
+        except (TypeError, ValueError):
+            return False
+
+        with self._cerrojo:
+            return self._sincronizar_sin_cerrojo(restantes, reponer_en)
+
+    def _sincronizar_sin_cerrojo(self, restantes: int,
+                                 reponer_en) -> bool:
+        ahora = self._reloj()
+        self._gastos.clear()
+        # El gasto se anota como "lo que ya no está disponible". Se
+        # fecha de forma que caduque cuando el servidor dice que su
+        # ventana se repone, no sesenta segundos después de ahora.
+        gastado = max(0, self.presupuesto - restantes)
+        if gastado:
+            # Se acepta tanto un número de segundos como la duración
+            # tal cual viene en la cabecera ("7.66s", "1m30s"). Una
+            # prueba pasó "10s" y la conversión directa a float falló
+            # en silencio, cayendo al valor por defecto: el regulador
+            # habría esperado un minuto entero cuando el servidor
+            # decía diez segundos.
+            reponer = segundos_de_cabecera(reponer_en)
+            if reponer is None:
+                reponer = self.ventana
+            reponer = min(max(reponer, 0.0), self.ventana)
+            self._gastos.append((ahora - (self.ventana - reponer), gastado))
+        return True
+
+    def penalizar(self, segundos: Optional[float] = None) -> None:
+        """
+        Tras un 429, dar por gastado el presupuesto hasta que el
+        servidor diga que se repone.
+
+        El servidor sabe algo que nosotros no —su propia cuenta—, así
+        que cuando contesta 429 lo que toca es creerle y no seguir
+        estimando como si nada.
+
+        `segundos` ES EL TIEMPO QUE GROQ PIDE ESPERAR (18-nov-2026).
+        Antes el parámetro existía y no se usaba: la ventana se daba
+        por gastada durante un minuto entero aunque el 429 dijera
+        "try again in 5s". No rompía nada —solo esperaba de más— pero
+        un argumento que no se usa es señal de que la implementación
+        se separó de la intención, y aquí costaba minutos de reloj en
+        cada corrida.
+        """
+        with self._cerrojo:
+            self._penalizar_sin_cerrojo(segundos)
+
+    def _penalizar_sin_cerrojo(self, segundos) -> None:
+        ahora = self._reloj()
+        self._purgar(ahora)
+        espera = segundos_de_cabecera(segundos)
+        if espera is None:
+            espera = self.ventana
+        espera = min(max(espera, 0.0), self.ventana)
+        # Se fecha de forma que caduque cuando el servidor dice, no
+        # sesenta segundos después de ahora. Mismo criterio que
+        # sincronizar().
+        self._gastos.append((ahora - (self.ventana - espera), self.presupuesto))
+
+
+_regulador = ReguladorDeFichas()
+
 
 # "Please try again in 7.521s" · "in 1m30s" · "in 12m34.5s"
 _ESPERA_EN_EL_MENSAJE = re.compile(
@@ -271,13 +616,23 @@ def _llamar_groq_con_reintentos(
                 if modelo.startswith("openai/gpt-oss"):
                     extra["reasoning_effort"] = "low"
 
-                respuesta = cliente.chat.completions.create(
-                    model=modelo,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=temperature,
-                    max_completion_tokens=max_completion_tokens,
-                    **extra,
-                )
+                # Esperar aquí si esta llamada no cabe en lo que queda
+                # del minuto. Ver ReguladorDeFichas.
+                estimado = fichas_estimadas(prompt, max_completion_tokens)
+                _regulador.reservar(estimado)
+
+                respuesta, cabeceras = _crear_leyendo_cabeceras(
+                    cliente, modelo, prompt, temperature,
+                    max_completion_tokens, extra)
+
+                # El contador del propio Groq manda sobre cualquier
+                # cuenta nuestra. Si no vino, se corrige la estimación
+                # con el gasto real; si tampoco, se queda la
+                # estimación. Ver ReguladorDeFichas.sincronizar().
+                restantes, reponer = _limite_de_cabeceras(cabeceras)
+                if not _regulador.sincronizar(restantes, reponer):
+                    _regulador.ajustar(estimado, _fichas_gastadas(respuesta))
+
                 texto = (respuesta.choices[0].message.content or "").strip()
                 if texto:
                     return texto, None
@@ -295,7 +650,11 @@ def _llamar_groq_con_reintentos(
                 # Dominicana, y lo que hizo subir los 429 a quince en la
                 # gráfica de la cuenta: tres intentos por noticia, todos
                 # condenados de antemano.
+                # El servidor lleva su propia cuenta y acaba de decir
+                # que no cabe: se da por gastada la ventana en vez de
+                # seguir estimando como si nada.
                 espera = segundos_de_espera_sugeridos(str(e))
+                _regulador.penalizar(espera)
                 if espera is not None and espera > ESPERA_MAXIMA_POR_429:
                     # Más de un minuto y medio de espera no es un bache
                     # de ritmo: es el presupuesto agotado. Seguir
