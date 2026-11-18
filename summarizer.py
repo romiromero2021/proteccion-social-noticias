@@ -1275,6 +1275,15 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
         "- Tampoco traduzcas al español el nombre propio de una "
         "institución si el material no lo trae traducido: déjalo como "
         "viene.\n"
+        "- **EL EXTRACTO PUEDE VENIR CORTADO. TU RESUMEN NO.** El "
+        "buscador trunca los textos largos y los deja terminados en "
+        "puntos suspensivos («…y los años de...»). No copies ese corte: "
+        "termina la última frase que SÍ esté completa y detente ahí. "
+        "Vale más un resumen corto y entero que uno largo partido a la "
+        "mitad. Y no completes de tu cosecha lo que el corte se llevó: "
+        "si el extracto dice que cambian «las cotizaciones y los años "
+        "de...», escribe que cambian las cotizaciones, no que cambian "
+        "los años de servicio.\n"
         "- **El largo lo manda el material, no el máximo.** Si el extracto "
         "trae un solo hecho, una frase es la respuesta correcta. No rellenes "
         "hasta las tres frases.\n"
@@ -1305,7 +1314,8 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
             # Red de seguridad: usamos el título como resumen, en vez
             # de mostrarle al usuario ese tipo de respuesta.
             return {"resumen": titulo, "error_detalle": None}
-        return {"resumen": texto, "error_detalle": None}
+        return {"resumen": sin_corte_a_medias(texto, titulo),
+                "error_detalle": None}
 
     # Fallaron todos los modelos e intentos: respaldo con el snippet.
     #
@@ -1334,6 +1344,57 @@ def resumir_noticia(titulo: str, snippet: str, pais: str, groq_api_key: str) -> 
                                    "de la causa"),
         "es_extracto_no_resumen": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# UN RESUMEN NO PUEDE TERMINAR A MEDIAS
+# ---------------------------------------------------------------------------
+# EL CASO (18-nov-2026). Cuba llevó: «El régimen cubano aprueba nuevas
+# reglas de seguridad social que modifican el cálculo de pensiones, las
+# cotizaciones de trabajadores de distintos sectores y los años de...»
+#
+# El buscador había entregado el extracto ya truncado, con sus puntos
+# suspensivos, y el modelo hizo exactamente lo que se le pide: no
+# inventar lo que falta. El resultado es correcto y aun así no se puede
+# publicar, porque el boletín circula y una frase partida a la mitad
+# parece un fallo de quien lo firma.
+#
+# La regla del prompt se lo pide al modelo; esto lo garantiza. Las dos
+# cosas, porque una instrucción no es una garantía: el modelo acierta
+# casi siempre y «casi siempre» en doce reportes al mes son varias
+# frases rotas al año.
+_FINAL_CORTADO = re.compile(r"(?:\.\.\.|…)\s*$")
+_FIN_DE_FRASE = re.compile(r"[.!?][\"'»)\]]?\s")
+LARGO_MINIMO_DEL_RESUMEN = 30
+
+
+def sin_corte_a_medias(texto: str, titulo: str = "") -> str:
+    """
+    Devuelve el texto hasta la última frase completa.
+
+    Si al quitar el corte no queda una frase entera y de largo
+    razonable, se usa el título: un título es siempre una oración
+    completa, y nunca es falso.
+    """
+    try:
+        limpio = (texto or "").strip()
+        if not limpio or not _FINAL_CORTADO.search(limpio):
+            return limpio
+        sin_puntos = _FINAL_CORTADO.sub("", limpio).rstrip(" ,;:—–-")
+        finales = list(_FIN_DE_FRASE.finditer(sin_puntos + " "))
+        if finales:
+            entero = sin_puntos[:finales[-1].end()].strip()
+            if len(entero) >= LARGO_MINIMO_DEL_RESUMEN:
+                return entero
+        # NO HAY NINGUNA FRASE COMPLETA → EL TÍTULO.
+        #
+        # El primer intento ponía un punto al final de lo que quedara,
+        # y salía «…y los años de.» — peor que los puntos suspensivos,
+        # porque parece una errata en vez de un corte. Un título es
+        # siempre una oración entera y nunca es falso.
+        return (titulo or limpio).strip()
+    except Exception:
+        return (texto or "").strip()
 
 
 _PALABRA = re.compile(r"[\wÀ-ÿ]{4,}", re.UNICODE)
