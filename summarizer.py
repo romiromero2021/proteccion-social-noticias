@@ -1615,6 +1615,52 @@ def procesar_pais(
         seleccion.extend(verificadas)
         fuera_de_fecha.extend(rechazadas)
 
+    # LAS APROBADAS QUE NO CUPIERON (18-nov-2026)
+    #
+    # Una noticia con 3 puede acabar en el panel por cuatro razones muy
+    # distintas: su fecha real estaba fuera de rango, ya se había
+    # publicado hace poco, venía de un medio que debe probar su fecha,
+    # o simplemente NO CUPO. Las tres primeras escribían su motivo; la
+    # cuarta no. Aparecía con la razón positiva que le puso el editor y
+    # sin decir que había quedado fuera por falta de sitio.
+    #
+    # Para quien audita el panel, esa diferencia lo es todo: un 3 que se
+    # quedó fuera por criterio es un fallo que hay que corregir, y un 3
+    # que se quedó fuera por cupo es el sistema funcionando. Con el
+    # mismo aspecto, las dos cosas obligan a abrir el enlace y
+    # comprobar a mano.
+    #
+    # Se arman aquí y no al filtrar `puntuadas` porque en la rama del
+    # editor caído `puntuadas` está vacía: allí estas noticias
+    # desaparecían del panel por completo.
+    total_aprobadas = len(aprobadas)
+    puesto_de: Dict[str, int] = {}
+    for puesto, aprobada in enumerate(aprobadas, start=1):
+        for clave in claves_de_identidad(aprobada):
+            puesto_de.setdefault(clave, puesto)
+
+    no_cupieron = []
+    for n in pendientes:
+        puesto = next((puesto_de[c] for c in claves_de_identidad(n)
+                       if c in puesto_de), None)
+        motivo = (
+            f"no entró por cupo: quedó en el puesto {puesto} de "
+            f"{total_aprobadas} aprobadas"
+            if puesto else
+            f"no entró por cupo: {total_aprobadas} aprobadas para "
+            f"{n_noticias} plazas"
+        )
+        motivo += f", y el boletín publica {n_noticias} por país"
+        del_editor = (n.get("razon") or "").strip()
+        if del_editor and del_editor != "sin revisar":
+            motivo += f" · el editor la aprobó: «{del_editor}»"
+        no_cupieron.append({
+            "titulo": n.get("titulo", ""), "fuente": n.get("fuente", ""),
+            "link": n.get("link", ""), "nota": n.get("nota"),
+            "_id_candidata": n.get("_id_candidata"),
+            "razon": motivo,
+        })
+
     # El panel de descartadas se arma AL FINAL, cuando la selección ya
     # es definitiva: así cada noticia aparece una sola vez y con el
     # motivo que de verdad la dejó fuera.
@@ -1643,7 +1689,8 @@ def procesar_pais(
     # El enlace y el título quedan de respaldo por si alguna noticia
     # llega por un camino que no pasó por el marcado.
     ya_resueltas: set = set()
-    for n in list(seleccion) + list(fuera_de_fecha) + list(repetidas):
+    for n in (list(seleccion) + list(fuera_de_fecha) + list(repetidas)
+              + list(no_cupieron)):
         ya_resueltas |= claves_de_identidad(n)
     descartadas = [
         {"titulo": n["titulo"], "fuente": n.get("fuente", ""),
@@ -1651,7 +1698,7 @@ def procesar_pais(
          "razon": n.get("razon", "")}
         for n in puntuadas
         if not (claves_de_identidad(n) & ya_resueltas)
-    ] + sin_puntuar + repetidas + fuera_de_fecha
+    ] + sin_puntuar + repetidas + fuera_de_fecha + no_cupieron
 
     if not seleccion:
         return {"pais": pais, "noticias": [], "sin_resultados": True,
